@@ -1,0 +1,37 @@
+# Privado - No sincronizar en el repo
+
+# Memoria personal de conversaciones
+.mem/
+*.db
+embeddings/
+transcripts/
+
+# Credenciales y secrets
+.env
+.env.local
+.env.*.local
+secrets.json
+api_keys.json
+credentials.json
+
+# Cache y temporal
+.cache/
+*.log
+tmp/
+node_modules/
+dist/
+build/
+
+# IDE
+.DS_Store
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.iml
+
+# Temporales
+*.tmp
+*.bak
+*.orig

@@ -1,0 +1,44 @@
+{
+  "model": "claude-opus-4-6",
+  "language": "es",
+  "permissions": {
+    "allow": [
+      "Bash",
+      "Edit",
+      "Read",
+      "Write",
+      "Glob",
+      "Grep"
+    ]
+  },
+  "env": {
+    "PROJECT_NAME": "LectorSync",
+    "PLATFORMS": "iOS,Android,macOS,Windows,Linux",
+    "SYNC_LATENCY_TARGET_MS": "100",
+    "TOOLS_ENABLED": "true",
+    "MEMORY_ENABLED": "true"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/verify-tools.sh",
+            "async": true,
+            "statusMessage": "✨ Verificando herramientas de LectorSync...",
+            "asyncRewake": false
+          }
+        ]
+      }
+    ]
+  },
+  "extraKnownMarketplaces": {
+    "claude-plugins-official": {
+      "source": {
+        "source": "github",
+        "repo": "anthropics/claude-plugins-official"
+      }
+    }
+  }
+}

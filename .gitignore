@@ -53,6 +53,11 @@ lectorsync/.packages
 # Claude
 .claude/cache/
 .claude/projects/
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+
+# Herramientas locales / JDK copiado al repo (no es código del proyecto)
+oracleJdk-26/
 
 # Temporary files
 *.tmp

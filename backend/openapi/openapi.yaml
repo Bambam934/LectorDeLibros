@@ -1,0 +1,123 @@
+openapi: 3.1.0
+info:
+  title: LectorSync API
+  version: 0.1.0
+servers:
+  - url: http://127.0.0.1:3000
+paths:
+  /api/v1/health:
+    get:
+      summary: Healthcheck del servicio
+      responses:
+        '200':
+          description: Servicio operativo
+  /api/v1/auth/login:
+    post:
+      summary: Login de usuario
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  minLength: 8
+      responses:
+        '200':
+          description: Tokens de sesion
+  /api/v1/auth/refresh:
+    post:
+      summary: Renovar access token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token:
+                  type: string
+      responses:
+        '200':
+          description: Nuevos tokens de sesion
+  /api/v1/auth/logout:
+    post:
+      summary: Cerrar sesion del usuario
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: Sesion cerrada
+  /api/v1/library:
+    get:
+      summary: Obtener biblioteca del usuario
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Lista de libros
+  /api/v1/library/import:
+    post:
+      summary: Encolar importacion de libro
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                language:
+                  type: string
+                  default: es
+      responses:
+        '202':
+          description: Libro en procesamiento
+  /api/v1/books/{bookId}/chapters/{chapterId}/audio:
+    post:
+      summary: Obtener o generar audio de capitulo
+      description: Si existe en chapter_audio devuelve source=cache, si no existe source=generated.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: bookId
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: chapterId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Audio disponible
+  /api/v1/books/{bookId}/progress:
+    put:
+      summary: Guardar progreso de lectura
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: bookId
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Progreso actualizado
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
