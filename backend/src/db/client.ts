@@ -13,6 +13,11 @@ let dbInstance: ReturnType<typeof drizzle<typeof schema>> | null = null;
 
 if (env.DATABASE_URL) {
   pool = new Pool({ connectionString: env.DATABASE_URL });
+  
+  pool.on('error', (err) => {
+    console.error('Unexpected error on idle client', err);
+  });
+
   dbInstance = drizzle(pool, { schema });
 }
 

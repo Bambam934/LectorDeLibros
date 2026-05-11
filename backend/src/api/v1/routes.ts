@@ -130,6 +130,10 @@ export async function registerV1Routes(app: FastifyInstance): Promise<void> {
 			});
 		}
 
+		if (error.statusCode) {
+			return reply.code(error.statusCode).send(error);
+		}
+
 		request.log.error({ err: error }, 'Unhandled error');
 
 		if (env.NODE_ENV === 'production') {
