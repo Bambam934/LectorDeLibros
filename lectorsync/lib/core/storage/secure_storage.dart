@@ -13,6 +13,9 @@ class SecureStorage {
   Future<void> saveTokens({required String access, required String refresh}) async {
     try {
       if (kIsWeb) {
+        // SECURITY NOTE: SharedPreferences on web uses localStorage which is
+        // accessible via XSS. For production web deployments, consider using
+        // httpOnly cookies managed by a BFF (Backend-For-Frontend) instead.
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString(_accessTokenKey, access);
         await prefs.setString(_refreshTokenKey, refresh);

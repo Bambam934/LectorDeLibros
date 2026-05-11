@@ -4,12 +4,12 @@ import helmet from '@fastify/helmet';
 import jwt from '@fastify/jwt';
 import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
-import staticPlugin from '@fastify/static';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Fastify, { type FastifyInstance } from 'fastify';
 
 import { registerV1Routes } from './api/v1/routes.js';
+import { cleanupExpiredTokens } from './core/token-revocation.js';
 import { env } from './core/env.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -47,12 +47,14 @@ export async function buildApp(): Promise<FastifyInstance> {
     });
   }
 
-  await app.register(cors, {
-    origin: corsOrigins.length > 0 ? corsOrigins : true,
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
-  });
+	await app.register(cors, {
+		origin: env.NODE_ENV === 'production'
+			? (corsOrigins.length > 0 ? corsOrigins : false)
+			: (corsOrigins.length > 0 ? corsOrigins : true),
+		credentials: true,
+		methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+		allowedHeaders: ['Content-Type', 'Authorization']
+	});
 
   await app.register(rateLimit, {
     max: (req) =>
@@ -69,23 +71,23 @@ export async function buildApp(): Promise<FastifyInstance> {
     }
   });
 
-  await app.register(multipart, {
-    limits: {
-      fileSize: 50 * 1024 * 1024 // 50 MB por archivo
-    }
-  });
+	await app.register(multipart, {
+		limits: {
+			fileSize: 50 * 1024 * 1024
+		}
+	});
 
-  await app.register(staticPlugin, {
-    root: AUDIO_DIR,
-    prefix: '/audio/',
-    decorateReply: false
-  });
-
-  await app.register(jwt, {
+	await app.register(jwt, {
     secret: env.JWT_SECRET
   });
 
-  await registerV1Routes(app);
+	await registerV1Routes(app);
 
-  return app;
+	setInterval(() => {
+		cleanupExpiredTokens().catch((err) => {
+			app.log.error(err, 'Failed to cleanup expired tokens');
+		});
+	}, 60 * 60_000).unref();
+
+	return app;
 }

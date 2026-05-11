@@ -7,6 +7,6 @@ export default defineConfig({
   out: './drizzle',
   dialect: 'postgresql',
   dbCredentials: {
-    url: process.env.DATABASE_URL ?? 'postgresql://postgres:postgres@localhost:5432/lectorsync'
+    url: process.env.DATABASE_URL || 'postgresql://lectorsync_app:changeme_use_docker_secrets_in_prod@127.0.0.1:5432/lectorsync'
   }
 });

@@ -7,7 +7,7 @@ export function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 
-export async function revokeToken(token: string, userId: string, expiresIn: string): Promise<void> {
+export async function revokeToken(token: string, userId: string, expiresIn: string, type: 'access' | 'refresh' = 'refresh'): Promise<void> {
   const db = getDb();
   if (!db) return;
 
@@ -24,10 +24,10 @@ export async function revokeToken(token: string, userId: string, expiresIn: stri
 
   const tokenHash = hashToken(token);
   await db.insert(revokedTokens).values({
-    tokenHash,
-    userId,
-    type: 'refresh',
-    expiresAt
+		tokenHash,
+		userId,
+		type,
+		expiresAt
   });
 }
 

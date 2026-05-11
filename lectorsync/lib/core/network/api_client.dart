@@ -60,6 +60,8 @@ class ApiClient {
   Dio get dio => _dio;
 
   String _getBaseUrl() {
+    const envBaseUrl = String.fromEnvironment('API_BASE_URL');
+    if (envBaseUrl.isNotEmpty) return envBaseUrl;
     if (kIsWeb) return 'http://localhost:3000';
     if (Platform.isAndroid) return 'http://10.0.2.2:3000';
     return 'http://localhost:3000';

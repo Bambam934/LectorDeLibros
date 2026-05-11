@@ -51,7 +51,7 @@ const _kVoiceIdKey = 'elevenlabs_voice_id';
 
 Future<String> getSelectedVoiceId() async {
   final prefs = await SharedPreferences.getInstance();
-  return prefs.getString(_kVoiceIdKey) ?? '21m00Tcm4TlvDq8ikWAW';
+  return prefs.getString(_kVoiceIdKey) ?? const String.fromEnvironment('ELEVENLABS_VOICE_ID', defaultValue: '');
 }
 
 Future<void> setSelectedVoiceId(String voiceId) async {

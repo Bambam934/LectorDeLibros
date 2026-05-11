@@ -4,14 +4,14 @@ services:
     container_name: lectorsync-postgres
     environment:
       POSTGRES_DB: lectorsync
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: lectorsync_app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_use_docker_secrets_in_prod}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U postgres -d lectorsync" ]
+      test: [ "CMD-SHELL", "pg_isready -U lectorsync_app -d lectorsync" ]
       interval: 5s
       timeout: 5s
       retries: 10

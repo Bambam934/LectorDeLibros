@@ -15,7 +15,15 @@ export class EpubParser implements BookParser {
     if (!containerEntry) {
       throw new Error('EPUB inválido: falta META-INF/container.xml');
     }
-    const containerXml = await parseStringPromise(containerEntry.getData().toString('utf-8'));
+	const containerXml = await parseStringPromise(containerEntry.getData().toString('utf-8'), {
+		explicitCharkey: true,
+		normalizeTags: true,
+		attrkey: '$',
+		charkey: '_',
+		emptyTag: undefined,
+		mergeAttrs: false,
+		strict: true
+	});
     const opfPath: string | undefined = containerXml?.container?.rootfiles?.[0]?.rootfile?.[0]?.$?.['full-path'];
     if (!opfPath) {
       throw new Error('EPUB inválido: container.xml no apunta a un .opf');
@@ -25,7 +33,15 @@ export class EpubParser implements BookParser {
     if (!opfEntry) {
       throw new Error(`EPUB inválido: no se encontró ${opfPath}`);
     }
-    const opfXml = await parseStringPromise(opfEntry.getData().toString('utf-8'));
+	const opfXml = await parseStringPromise(opfEntry.getData().toString('utf-8'), {
+		explicitCharkey: true,
+		normalizeTags: true,
+		attrkey: '$',
+		charkey: '_',
+		emptyTag: undefined,
+		mergeAttrs: false,
+		strict: true
+	});
     const pkg = opfXml.package ?? opfXml['opf:package'];
     if (!pkg) {
       throw new Error('EPUB inválido: estructura .opf no reconocida');
@@ -58,8 +74,12 @@ export class EpubParser implements BookParser {
       if (!item) continue;
       if (!/x?html/i.test(item.mediaType)) continue;
 
-      const chapterPath = opfDir ? `${opfDir}/${item.href}` : item.href;
-      const chapterEntry = zip.getEntry(chapterPath);
+		const chapterPath = opfDir ? `${opfDir}/${item.href}` : item.href;
+		const normalizedChapterPath = chapterPath.replace(/\\/g, '/').replace(/\/\.\.\//g, '/').replace(/\/\.\//g, '/');
+		if (normalizedChapterPath.includes('..')) {
+			continue;
+		}
+		const chapterEntry = zip.getEntry(normalizedChapterPath);
       if (!chapterEntry) continue;
 
       const html = chapterEntry.getData().toString('utf-8');

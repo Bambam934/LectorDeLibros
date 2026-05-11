@@ -67,9 +67,11 @@ class RemoteAuthRepository implements AuthRepository {
 
   Future<void> logout() async {
     try {
-      await _dio.post('/api/v1/auth/logout', data: {});
+      final refreshToken = await _storage.getRefreshToken();
+      await _dio.post('/api/v1/auth/logout', data: {
+        if (refreshToken != null) 'refresh_token': refreshToken,
+      });
     } catch (_) {
-      // Ignorar fallos de red en logout, igual limpiamos tokens
     } finally {
       await _storage.clearTokens();
     }
