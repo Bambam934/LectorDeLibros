@@ -407,6 +407,12 @@ class _PreviewBox extends StatelessWidget {
   const _PreviewBox({required this.prefs});
   final ReadingPreferences prefs;
 
+  String _familyLabel(ReadingFontFamily family) => switch (family) {
+        ReadingFontFamily.serif => 'Serif',
+        ReadingFontFamily.sansSerif => 'Sans',
+        ReadingFontFamily.mono => 'Mono',
+      };
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -420,17 +426,48 @@ class _PreviewBox extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: scheme.outlineVariant),
       ),
-      child: Text(
-        'En un lugar de la Mancha, de cuyo nombre no quiero acordarme, '
-        'no ha mucho tiempo que vivía un hidalgo de los de lanza en astillero.',
-        textAlign: prefs.textAlign,
-        style: TextStyle(
-          color: colors.foreground,
-          fontSize: prefs.fontSize,
-          height: prefs.lineHeight,
-          letterSpacing: prefs.letterSpacing,
-          fontFamily: prefs.fontFamilyName,
-        ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: colors.foreground.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  '${_familyLabel(prefs.fontFamily)} · '
+                  '${prefs.fontSize.toInt()}pt · '
+                  'h${prefs.lineHeight.toStringAsFixed(2)}',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.5,
+                    color: colors.foreground.withValues(alpha: 0.7),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            'En un lugar de la Mancha, de cuyo nombre no quiero '
+            'acordarme, no ha mucho tiempo que vivía un hidalgo de los '
+            'de lanza en astillero, adarga antigua, rocín flaco y galgo '
+            'corredor.',
+            textAlign: prefs.textAlign,
+            style: TextStyle(
+              color: colors.foreground,
+              fontSize: prefs.fontSize,
+              height: prefs.lineHeight,
+              letterSpacing: prefs.letterSpacing,
+              fontFamily: prefs.fontFamilyName,
+            ),
+          ),
+        ],
       ),
     );
   }

@@ -2,12 +2,14 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../../domain/entities/book.dart';
+import 'book_shelves_sheet.dart';
 
 class BookCard extends StatefulWidget {
-  const BookCard({required this.book, this.onTap, super.key});
+  const BookCard({required this.book, this.onTap, this.onDelete, super.key});
 
   final Book book;
   final VoidCallback? onTap;
+  final VoidCallback? onDelete;
 
   @override
   State<BookCard> createState() => _BookCardState();
@@ -40,6 +42,94 @@ class _BookCardState extends State<BookCard>
 
   void _onExit(PointerExitEvent _) {
     _hoverCtrl.reverse();
+  }
+
+  void _showContextMenu(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetCtx) {
+        final scheme = Theme.of(sheetCtx).colorScheme;
+        return SafeArea(
+          top: false,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 4, 20, 16),
+                child: Row(
+                  children: [
+                    Icon(_formatIcon, color: _formatColor(scheme)),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            widget.book.title,
+                            style: Theme.of(sheetCtx)
+                                .textTheme
+                                .titleMedium
+                                ?.copyWith(fontWeight: FontWeight.w700),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          if (widget.book.author != null)
+                            Text(
+                              widget.book.author!,
+                              style: TextStyle(
+                                color: scheme.onSurfaceVariant,
+                                fontSize: 13,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.menu_book_rounded),
+                title: const Text('Abrir'),
+                onTap: () {
+                  Navigator.pop(sheetCtx);
+                  widget.onTap?.call();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.collections_bookmark_rounded),
+                title: const Text('Estanterías'),
+                onTap: () {
+                  Navigator.pop(sheetCtx);
+                  showModalBottomSheet<void>(
+                    context: context,
+                    isScrollControlled: true,
+                    builder: (_) => BookShelvesSheet(
+                      bookId: widget.book.id,
+                      bookTitle: widget.book.title,
+                    ),
+                  );
+                },
+              ),
+              ListTile(
+                leading: Icon(Icons.delete_outline_rounded,
+                    color: Colors.redAccent),
+                title: const Text('Eliminar',
+                    style: TextStyle(color: Colors.redAccent)),
+                onTap: () {
+                  Navigator.pop(sheetCtx);
+                  widget.onDelete?.call();
+                },
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   Color _formatColor(ColorScheme scheme) => switch (widget.book.fileFormat) {
@@ -134,6 +224,44 @@ class _BookCardState extends State<BookCard>
               ),
             ),
           ),
+        // Overflow menu (only when a delete handler is supplied).
+        // Placed bottom-right so it doesn't overlap the reading/leído
+        // pill which sits at the top-right.
+        if (widget.onDelete != null)
+          Positioned(
+            bottom: widget.book.progress > 0 ? 10 : 6,
+            right: 6,
+            child: Material(
+              color: Colors.black.withValues(alpha: 0.5),
+              shape: const CircleBorder(),
+              clipBehavior: Clip.antiAlias,
+              child: PopupMenuButton<String>(
+                tooltip: 'Más opciones',
+                icon: const Icon(
+                  Icons.more_horiz_rounded,
+                  size: 18,
+                  color: Colors.white,
+                ),
+                padding: EdgeInsets.zero,
+                onSelected: (value) {
+                  if (value == 'delete') {
+                    widget.onDelete?.call();
+                  }
+                },
+                itemBuilder: (_) => const [
+                  PopupMenuItem(
+                    value: 'delete',
+                    child: ListTile(
+                      leading: Icon(Icons.delete_outline_rounded,
+                          color: Colors.redAccent),
+                      title: Text('Eliminar'),
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
       ],
     );
 
@@ -195,6 +323,12 @@ class _BookCardState extends State<BookCard>
           label: _semanticLabel,
           child: InkWell(
             onTap: widget.onTap,
+            // Long-press → contextual action menu (mobile-friendly
+            // alternative to the 3-dot overflow on the cover). Triggers
+            // the same delete handler so behaviour is consistent.
+            onLongPress: widget.onDelete == null
+                ? null
+                : () => _showContextMenu(context),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [

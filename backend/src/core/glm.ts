@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
 import { env } from './env.js';
 
 export type GlmMessage = {
@@ -9,8 +10,6 @@ export type GlmMessage = {
 export type GlmOptions = {
   temperature?: number;
   maxTokens?: number;
-  stream?: boolean;
-  enableThinking?: boolean;
 };
 
 function createClient(): OpenAI {
@@ -23,46 +22,38 @@ function createClient(): OpenAI {
   });
 }
 
-/**
- * Llamada simple: devuelve el texto de respuesta.
- */
 export async function glmChat(
   messages: GlmMessage[],
   options: GlmOptions = {}
 ): Promise<string> {
   const client = createClient();
-  const { temperature = 0.7, maxTokens = 4096, enableThinking = false } = options;
+  const { temperature = 0.7, maxTokens = 4096 } = options;
 
   const completion = await client.chat.completions.create({
     model: 'z-ai/glm-5.1',
-    messages,
+    messages: messages as ChatCompletionMessageParam[],
     temperature,
     top_p: 1,
     max_tokens: maxTokens,
-    ...(({ extra_body: { chat_template_kwargs: { enable_thinking: enableThinking, clear_thinking: false } } }) as Record<string, unknown>),
   });
 
   return completion.choices[0]?.message?.content ?? '';
 }
 
-/**
- * Llamada con streaming: emite chunks de texto a medida que llegan.
- */
 export async function* glmStream(
   messages: GlmMessage[],
   options: GlmOptions = {}
 ): AsyncGenerator<string> {
   const client = createClient();
-  const { temperature = 0.7, maxTokens = 4096, enableThinking = false } = options;
+  const { temperature = 0.7, maxTokens = 4096 } = options;
 
   const stream = await client.chat.completions.create({
     model: 'z-ai/glm-5.1',
-    messages,
+    messages: messages as ChatCompletionMessageParam[],
     temperature,
     top_p: 1,
     max_tokens: maxTokens,
     stream: true,
-    ...(({ extra_body: { chat_template_kwargs: { enable_thinking: enableThinking, clear_thinking: false } } }) as Record<string, unknown>),
   });
 
   for await (const chunk of stream) {
@@ -71,11 +62,6 @@ export async function* glmStream(
   }
 }
 
-// ─── Funciones de alto nivel para LectorSync ───────────────────────────────
-
-/**
- * Genera un resumen corto de un capítulo de libro.
- */
 export async function summarizeChapter(text: string): Promise<string> {
   return glmChat([
     {
@@ -88,10 +74,6 @@ export async function summarizeChapter(text: string): Promise<string> {
   ]);
 }
 
-/**
- * Detecta personajes y sus diálogos en un fragmento de texto.
- * Devuelve JSON con estructura { character: string, lines: string[] }[].
- */
 export async function detectDialogues(
   text: string
 ): Promise<{ character: string; lines: string[] }[]> {
@@ -106,7 +88,7 @@ export async function detectDialogues(
       },
       { role: 'user', content: text.slice(0, 6000) },
     ],
-    { temperature: 0.3, enableThinking: true }
+    { temperature: 0.3 }
   );
 
   try {
@@ -117,9 +99,6 @@ export async function detectDialogues(
   }
 }
 
-/**
- * Limpia y normaliza texto de EPUB antes de enviarlo a TTS.
- */
 export async function cleanTextForTts(raw: string): Promise<string> {
   return glmChat([
     {

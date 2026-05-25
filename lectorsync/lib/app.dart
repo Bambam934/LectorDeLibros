@@ -30,14 +30,17 @@ class LectorSyncApp extends StatelessWidget {
           final authCubit = context.read<AuthCubit>();
           final router = buildRouter(authCubit);
 
-          return BlocBuilder<ThemeCubit, ThemeMode>(
-            builder: (context, themeMode) {
+          return BlocBuilder<ThemeCubit, ThemeState>(
+            builder: (context, themeState) {
               return MaterialApp.router(
                 title: 'LectorSync',
                 debugShowCheckedModeBanner: false,
                 theme: AppTheme.light,
-                darkTheme: AppTheme.dark,
-                themeMode: themeMode,
+                // Use the amber/sepia warm theme when the user picked
+                // AppThemeMode.warm, otherwise the cool charcoal dark.
+                darkTheme:
+                    themeState.isWarm ? AppTheme.warm : AppTheme.dark,
+                themeMode: themeState.themeMode,
                 routerConfig: router,
               );
             },

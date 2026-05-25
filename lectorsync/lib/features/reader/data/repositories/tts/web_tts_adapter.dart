@@ -86,7 +86,7 @@ class WebTtsAdapter implements TtsAdapter {
       langResult = await _tts.setLanguage('en-US');
     }
 
-    await _tts.setSpeechRate(speechRate);
+    await _tts.setSpeechRate(_scaleRate(speechRate));
     await _tts.awaitSpeakCompletion(true);
 
     _isInitialized = true;
@@ -99,8 +99,16 @@ class WebTtsAdapter implements TtsAdapter {
   @override
   Future<void> stop() => _tts.stop();
 
+  // flutter_tts on Android multiplies rate by 2.0 internally before passing
+  // to TextToSpeech.setSpeechRate (where 1.0 = normal). On web, flutter_tts
+  // passes the rate directly to SpeechSynthesisUtterance.rate (where 1.0 =
+  // normal). Without scaling, our default 0.6 produces Android 1.2 (normal+)
+  // but Web 0.6 (noticeably slow). Apply the same 2x factor here.
+  static double _scaleRate(double rate) => rate * 2.0;
+
   @override
-  Future<void> setSpeechRate(double rate) => _tts.setSpeechRate(rate);
+  Future<void> setSpeechRate(double rate) =>
+      _tts.setSpeechRate(_scaleRate(rate));
 
   @override
   Future<void> setLanguage(String languageCode) =>

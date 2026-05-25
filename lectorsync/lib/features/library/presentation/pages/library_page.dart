@@ -9,11 +9,14 @@ import '../../../../core/layout/breakpoints.dart';
 import '../../../../core/theme/theme_cubit.dart';
 import '../../../../shared/widgets/empty_state.dart';
 import '../../../auth/presentation/cubit/auth_cubit.dart';
+import '../../../reader/data/repositories/reading_stats_repository.dart';
 import '../../domain/entities/book.dart';
 import '../bloc/library_bloc.dart';
 import '../bloc/library_event.dart';
 import '../bloc/library_state.dart';
 import '../widgets/book_card.dart';
+import '../widgets/global_search_delegate.dart';
+import '../widgets/onboarding_overlay.dart';
 
 class LibraryPage extends StatelessWidget {
   const LibraryPage({super.key});
@@ -39,6 +42,20 @@ class _LibraryViewState extends State<_LibraryView> {
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
   int _selectedNavIndex = 0;
+  bool _showOnboarding = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Check first-launch state asynchronously so we don't block the
+    // first frame; if the user has never seen the tour we surface it
+    // as a full-screen overlay above the library.
+    OnboardingOverlay.hasBeenSeen().then((seen) {
+      if (!seen && mounted) {
+        setState(() => _showOnboarding = true);
+      }
+    });
+  }
 
   @override
   void dispose() {
@@ -91,6 +108,17 @@ class _LibraryViewState extends State<_LibraryView> {
     });
   }
 
+  Future<void> _openGlobalSearch(BuildContext context) async {
+    final books = context.read<LibraryBloc>().state.books;
+    final result = await showSearch<GlobalSearchResult?>(
+      context: context,
+      delegate: GlobalSearchDelegate(books: books),
+    );
+    if (result != null && context.mounted) {
+      _openBook(context, result.book);
+    }
+  }
+
   List<Book> _filterBooks(List<Book> books) {
     if (_searchQuery.trim().isEmpty) return books;
     final q = _searchQuery.toLowerCase();
@@ -105,8 +133,10 @@ class _LibraryViewState extends State<_LibraryView> {
     final bp = breakpointOf(context);
 
     return Scaffold(
-      body: SafeArea(
-        child: BlocConsumer<LibraryBloc, LibraryState>(
+      body: Stack(
+        children: [
+          SafeArea(
+            child: BlocConsumer<LibraryBloc, LibraryState>(
           listenWhen: (prev, curr) =>
               curr.status == LibraryStatus.failure &&
               prev.errorMessage != curr.errorMessage,
@@ -128,6 +158,7 @@ class _LibraryViewState extends State<_LibraryView> {
                 onSearchChanged: (v) => setState(() => _searchQuery = v),
                 onImport: () => _importBook(context),
                 onOpenBook: (b) => _openBook(context, b),
+                onGlobalSearch: () => _openGlobalSearch(context),
                 state: state,
                 filtered: _filterBooks(state.books),
               ),
@@ -137,6 +168,7 @@ class _LibraryViewState extends State<_LibraryView> {
                 onSearchChanged: (v) => setState(() => _searchQuery = v),
                 onImport: () => _importBook(context),
                 onOpenBook: (b) => _openBook(context, b),
+                onGlobalSearch: () => _openGlobalSearch(context),
                 state: state,
                 filtered: _filterBooks(state.books),
               ),
@@ -146,6 +178,7 @@ class _LibraryViewState extends State<_LibraryView> {
                 onSearchChanged: (v) => setState(() => _searchQuery = v),
                 onImport: () => _importBook(context),
                 onOpenBook: (b) => _openBook(context, b),
+                onGlobalSearch: () => _openGlobalSearch(context),
                 state: state,
                 filtered: _filterBooks(state.books),
                 selectedNavIndex: _selectedNavIndex,
@@ -153,7 +186,15 @@ class _LibraryViewState extends State<_LibraryView> {
               ),
             );
           },
-        ),
+            ),
+          ),
+          if (_showOnboarding)
+            Positioned.fill(
+              child: OnboardingOverlay(
+                onFinish: () => setState(() => _showOnboarding = false),
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -168,6 +209,7 @@ class _CompactLayout extends StatelessWidget {
     required this.onSearchChanged,
     required this.onImport,
     required this.onOpenBook,
+    required this.onGlobalSearch,
     required this.state,
     required this.filtered,
   });
@@ -177,6 +219,7 @@ class _CompactLayout extends StatelessWidget {
   final ValueChanged<String> onSearchChanged;
   final VoidCallback onImport;
   final ValueChanged<Book> onOpenBook;
+  final VoidCallback onGlobalSearch;
   final LibraryState state;
   final List<Book> filtered;
 
@@ -189,10 +232,26 @@ class _CompactLayout extends StatelessWidget {
   final continueReading =
       readingBooks.isNotEmpty ? readingBooks.first : null;
 
-  return CustomScrollView(
+  return RefreshIndicator(
+    onRefresh: () async {
+      // Re-fetch the library from the backend on pull-to-refresh —
+      // picks up books / progress changes from other devices.
+      final bloc = context.read<LibraryBloc>();
+      bloc.add(LibraryFetched());
+      // Wait until the request settles so the spinner stays visible
+      // until the new data arrives.
+      try {
+        await bloc.stream.firstWhere(
+          (s) => s.status != LibraryStatus.loading,
+        );
+      } catch (_) {}
+    },
+    child: CustomScrollView(
+      physics: const AlwaysScrollableScrollPhysics(),
       slivers: [
         SliverToBoxAdapter(
-          child: _LibraryTopBar(onImport: onImport),
+          child: _LibraryTopBar(
+              onImport: onImport, onGlobalSearch: onGlobalSearch),
         ),
         SliverToBoxAdapter(
           child: _SearchField(
@@ -248,7 +307,8 @@ class _CompactLayout extends StatelessWidget {
             ),
           ),
       ],
-    );
+    ),
+  );
   }
 }
 
@@ -261,6 +321,7 @@ class _MediumLayout extends StatelessWidget {
     required this.onSearchChanged,
     required this.onImport,
     required this.onOpenBook,
+    required this.onGlobalSearch,
     required this.state,
     required this.filtered,
   });
@@ -270,6 +331,7 @@ class _MediumLayout extends StatelessWidget {
   final ValueChanged<String> onSearchChanged;
   final VoidCallback onImport;
   final ValueChanged<Book> onOpenBook;
+  final VoidCallback onGlobalSearch;
   final LibraryState state;
   final List<Book> filtered;
 
@@ -291,7 +353,9 @@ class _MediumLayout extends StatelessWidget {
           width: 280,
           child: CustomScrollView(
             slivers: [
-              SliverToBoxAdapter(child: _LibraryTopBar(onImport: onImport)),
+              SliverToBoxAdapter(
+                  child: _LibraryTopBar(
+                      onImport: onImport, onGlobalSearch: onGlobalSearch)),
               SliverToBoxAdapter(
                 child: _SearchField(
                   controller: searchController,
@@ -371,6 +435,7 @@ class _ExpandedLayout extends StatelessWidget {
     required this.onSearchChanged,
     required this.onImport,
     required this.onOpenBook,
+    required this.onGlobalSearch,
     required this.state,
     required this.filtered,
     required this.selectedNavIndex,
@@ -382,6 +447,7 @@ class _ExpandedLayout extends StatelessWidget {
   final ValueChanged<String> onSearchChanged;
   final VoidCallback onImport;
   final ValueChanged<Book> onOpenBook;
+  final VoidCallback onGlobalSearch;
   final LibraryState state;
   final List<Book> filtered;
   final int selectedNavIndex;
@@ -409,6 +475,25 @@ class _ExpandedLayout extends StatelessWidget {
               onPressed: onImport,
               icon: const Icon(Icons.add_rounded),
               tooltip: 'Importar libro',
+            ),
+          ),
+          // Theme cycle + logout always reachable, including on
+          // expanded (desktop/large) layouts which previously hid the
+          // _LibraryTopBar entirely.
+          trailing: Expanded(
+            child: Align(
+              alignment: Alignment.bottomCenter,
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: const [
+                    _ThemeCycleButton(),
+                    SizedBox(height: 4),
+                    _LogoutButton(),
+                  ],
+                ),
+              ),
             ),
           ),
           destinations: const [
@@ -577,9 +662,10 @@ class _ExpandedSidebar extends StatelessWidget {
 // ── Shared widgets ──
 
 class _LibraryTopBar extends StatelessWidget {
-  const _LibraryTopBar({required this.onImport});
+  const _LibraryTopBar({required this.onImport, this.onGlobalSearch});
 
   final VoidCallback onImport;
+  final VoidCallback? onGlobalSearch;
 
   @override
   Widget build(BuildContext context) {
@@ -609,51 +695,137 @@ class _LibraryTopBar extends StatelessWidget {
               ],
             ),
           ),
+          const _StreakChip(),
+          const SizedBox(width: 4),
+          if (onGlobalSearch != null)
+            IconButton(
+              onPressed: onGlobalSearch,
+              icon: const Icon(Icons.travel_explore_rounded),
+              tooltip: 'Buscar en la biblioteca',
+            ),
           IconButton.filledTonal(
             onPressed: onImport,
             icon: const Icon(Icons.add_rounded),
             tooltip: 'Importar libro',
           ),
           const SizedBox(width: 4),
-        BlocBuilder<ThemeCubit, ThemeMode>(
-          builder: (context, mode) {
-            return AnimatedSwitcher(
-              duration: const Duration(milliseconds: 300),
-              switchInCurve: Curves.easeOutCubic,
-              switchOutCurve: Curves.easeInCubic,
-              child: IconButton(
-                key: ValueKey(mode),
-                onPressed: () => context.read<ThemeCubit>().cycle(),
-                icon: Icon(_iconForMode(mode)),
-                tooltip: 'Tema (${_labelForMode(mode)})',
-              ),
-            );
-          },
-        ),
-          IconButton(
-            icon: const Icon(Icons.logout_rounded),
-            onPressed: () => context.read<AuthCubit>().logout(),
-            tooltip: 'Cerrar sesión',
-          ),
+          const _ThemeCycleButton(),
+          const _LogoutButton(),
         ],
       ),
     );
   }
+}
 
-  IconData _iconForMode(ThemeMode mode) {
+/// Reusable theme-mode cycling button. Visible in both the compact/medium
+/// top bar AND the expanded layout's NavigationRail trailing slot so it
+/// is always reachable regardless of breakpoint.
+class _ThemeCycleButton extends StatelessWidget {
+  const _ThemeCycleButton();
+
+  IconData _iconForAppMode(AppThemeMode mode) {
     return switch (mode) {
-      ThemeMode.system => Icons.brightness_auto_rounded,
-      ThemeMode.light => Icons.light_mode_rounded,
-      ThemeMode.dark => Icons.dark_mode_rounded,
+      AppThemeMode.system => Icons.brightness_auto_rounded,
+      AppThemeMode.light => Icons.light_mode_rounded,
+      AppThemeMode.dark => Icons.dark_mode_rounded,
+      AppThemeMode.warm => Icons.nights_stay_rounded,
+      AppThemeMode.scheduled => Icons.schedule_rounded,
     };
   }
 
-  String _labelForMode(ThemeMode mode) {
+  String _labelForAppMode(AppThemeMode mode) {
     return switch (mode) {
-      ThemeMode.system => 'Sistema',
-      ThemeMode.light => 'Claro',
-      ThemeMode.dark => 'Oscuro',
+      AppThemeMode.system => 'Sistema',
+      AppThemeMode.light => 'Claro',
+      AppThemeMode.dark => 'Oscuro',
+      AppThemeMode.warm => 'Cálido',
+      AppThemeMode.scheduled => 'Automático',
     };
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return BlocBuilder<ThemeCubit, ThemeState>(
+      builder: (context, state) {
+        final appMode = state.appMode;
+        return AnimatedSwitcher(
+          duration: const Duration(milliseconds: 300),
+          switchInCurve: Curves.easeOutCubic,
+          switchOutCurve: Curves.easeInCubic,
+          child: IconButton(
+            key: ValueKey(appMode),
+            onPressed: () => context.read<ThemeCubit>().cycle(),
+            icon: Icon(_iconForAppMode(appMode)),
+            tooltip: 'Tema (${_labelForAppMode(appMode)})',
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _LogoutButton extends StatelessWidget {
+  const _LogoutButton();
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      icon: const Icon(Icons.logout_rounded),
+      onPressed: () => context.read<AuthCubit>().logout(),
+      tooltip: 'Cerrar sesión',
+    );
+  }
+}
+
+/// Compact streak indicator visible in the library top bar. Shows a
+/// flame icon + day count when the user has an active streak (>= 1).
+/// Hidden entirely when there's no streak so it doesn't clutter the
+/// top bar for new users.
+class _StreakChip extends StatelessWidget {
+  const _StreakChip();
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return FutureBuilder<int>(
+      future: sl<ReadingStatsRepository>().getStreak(),
+      builder: (context, snap) {
+        final streak = snap.data ?? 0;
+        if (streak < 1) return const SizedBox.shrink();
+        return Tooltip(
+          message: 'Racha actual: $streak día${streak == 1 ? '' : 's'}',
+          child: Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [Color(0xFFFF8A00), Color(0xFFFF3D00)],
+              ),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.local_fire_department_rounded,
+                  size: 16,
+                  color: Colors.white,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  '$streak',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: scheme.onPrimary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 }
 
@@ -737,6 +909,44 @@ class _BookGrid extends StatelessWidget {
   final double maxExtent;
   final ValueChanged<Book> onTap;
 
+  Future<void> _confirmAndDelete(BuildContext context, Book book) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        icon: const Icon(Icons.delete_forever_rounded,
+            size: 36, color: Colors.redAccent),
+        title: const Text('Eliminar libro'),
+        content: Text(
+          '¿Eliminar definitivamente "${book.title}"? '
+          'Esta acción no se puede deshacer y se perderá tu progreso, '
+          'marcadores y caché de capítulos.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton.tonal(
+            style: FilledButton.styleFrom(
+              foregroundColor: Colors.redAccent,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Eliminar'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true && context.mounted) {
+      context.read<LibraryBloc>().add(LibraryBookDeleted(book.id));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Eliminando "${book.title}"…'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return SliverGrid(
@@ -752,6 +962,7 @@ class _BookGrid extends StatelessWidget {
           return BookCard(
             book: book,
             onTap: () => onTap(book),
+            onDelete: () => _confirmAndDelete(context, book),
           );
         },
         childCount: books.length,

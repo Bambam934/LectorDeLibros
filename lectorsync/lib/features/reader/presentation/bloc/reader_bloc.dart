@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../data/repositories/audio_tts_repository.dart';
+import '../../data/repositories/chapter_cache_repository.dart';
 import '../../domain/entities/chapter.dart';
 import '../../domain/repositories/reader_repository.dart';
 import '../../domain/repositories/tts_repository.dart';
@@ -36,9 +37,11 @@ class ReaderBloc extends Bloc<ReaderEvent, ReaderState> {
     required ReaderRepository readerRepository,
     required TtsRepository ttsRepository,
     AudioTtsRepository? audioTtsRepository,
+    ChapterCacheRepository? chapterCacheRepository,
   }) : _readerRepository = readerRepository,
        _ttsRepository = ttsRepository,
        _audioTtsRepository = audioTtsRepository,
+       _chapterCache = chapterCacheRepository,
        super(const ReaderState()) {
     on<ReaderStarted>(_onStarted);
     on<ReaderChapterSelected>(_onChapterSelected);
@@ -57,9 +60,18 @@ class ReaderBloc extends Bloc<ReaderEvent, ReaderState> {
 
   final ReaderRepository _readerRepository;
   final TtsRepository _ttsRepository;
+  final ChapterCacheRepository? _chapterCache;
   final AudioTtsRepository? _audioTtsRepository;
 
   Timer? _saveDebounceTimer;
+  // Hard throttle for save-during-TTS: even if the debounce keeps
+  // getting reset by continuous word emissions, this timer guarantees a
+  // sync to the server at least once every 15s while TTS is active.
+  // Without this, a long uninterrupted reading session would not
+  // checkpoint progress until the user paused — breaking multi-device
+  // resume if the app crashed mid-read.
+  Timer? _forceSyncTimer;
+  DateTime _lastForcedSaveAt = DateTime.fromMillisecondsSinceEpoch(0);
   String? _lastSavedChapterId;
   int? _lastSavedGlobalWordIndex;
   StreamSubscription<int>? _ttsWordSub;
@@ -97,6 +109,33 @@ class ReaderBloc extends Bloc<ReaderEvent, ReaderState> {
     );
     _ttsStatusSub = _ttsRepository.statusStream.listen(
       (s) => add(_TtsStatusUpdated(s)),
+    );
+  }
+
+  /// Fetch chapter with offline cache fallback.
+  /// Tries network first; on failure, serves from local cache.
+  /// On success, caches the result for future offline use.
+  Future<Chapter?> _fetchChapterWithCache(String bookId, String chapterId) async {
+    final result = await _readerRepository.getChapter(
+      bookId: bookId,
+      chapterId: chapterId,
+    );
+
+    return result.fold(
+      (failure) async {
+        // Network failed — try cache.
+        debugPrint('[ReaderBloc] network failed for $chapterId, trying cache');
+        final cached = await _chapterCache?.getCachedChapter(chapterId);
+        if (cached != null) {
+          debugPrint('[ReaderBloc] serving $chapterId from cache');
+        }
+        return cached;
+      },
+      (chapter) {
+        // Cache for offline use (fire-and-forget).
+        _chapterCache?.cacheChapter(bookId, chapter);
+        return chapter;
+      },
     );
   }
 
@@ -150,21 +189,22 @@ class ReaderBloc extends Bloc<ReaderEvent, ReaderState> {
 
         final selectedChapterSummary = chapters[selectedIndex];
 
-        final chapterResult = await _readerRepository.getChapter(
-          bookId: event.bookId,
-          chapterId: selectedChapterSummary.id,
+        final chapterDetail = await _fetchChapterWithCache(
+          event.bookId,
+          selectedChapterSummary.id,
         );
 
-        chapterResult.fold(
-          (failure) {
-            emit(
-              state.copyWith(
-                status: ReaderStatus.failure,
-                errorMessage: failure.message,
-              ),
-            );
-          },
-          (chapterDetail) {
+        if (chapterDetail == null) {
+          emit(
+            state.copyWith(
+              status: ReaderStatus.failure,
+              errorMessage: 'No se pudo cargar el capítulo (sin conexión y sin caché)',
+            ),
+          );
+          return;
+        }
+
+        {
             final localWordIndex = _toLocalWordIndex(
               chapters: chapters,
               chapterIndex: selectedIndex,
@@ -190,8 +230,19 @@ class ReaderBloc extends Bloc<ReaderEvent, ReaderState> {
                 clearErrorMessage: true,
               ),
             );
-          },
-        );
+
+            // FIX (web/Android no-sound regression): pre-initialise the
+            // TTS engine eagerly as soon as the book opens, NOT lazily
+            // on the first user tap. Web Speech API + Chrome/Safari
+            // autoplay policy require `window.speechSynthesis.speak()`
+            // to fire in the same synchronous chain as the user
+            // gesture — if we `await initialize()` between the tap and
+            // speak(), the browser silently drops the utterance. By
+            // priming the engine here (and again in `_onChapterSelected`
+            // below), `_onTtsToggled` can call speak() directly without
+            // any await, preserving the gesture link.
+            unawaited(_ensureTtsReady());
+        }
       },
     );
   }
@@ -219,41 +270,39 @@ class ReaderBloc extends Bloc<ReaderEvent, ReaderState> {
 
     emit(state.copyWith(status: ReaderStatus.loading, clearErrorMessage: true));
 
-    final chapterResult = await _readerRepository.getChapter(
-      bookId: state.bookId,
-      chapterId: event.chapterId,
+    final chapterDetail = await _fetchChapterWithCache(
+      state.bookId,
+      event.chapterId,
     );
 
-    chapterResult.fold(
-      (failure) {
-        emit(
-          state.copyWith(
-            status: ReaderStatus.failure,
-            errorMessage: failure.message,
-          ),
-        );
-      },
-      (chapterDetail) {
-        emit(
-          state.copyWith(
-            status: ReaderStatus.success,
-            currentChapter: chapterDetail,
-            currentChapterIndex: targetIndex,
-            currentWordIndex: 0,
-            progress: _computeBookProgress(
-              chapters: chapters,
-              chapterIndex: targetIndex,
-              chapterWordIndex: 0,
-            ),
-            clearErrorMessage: true,
-          ),
-        );
-        add(const ReaderProgressSaved());
-        if (event.autoPlayTts) {
-          add(const ReaderTtsToggled());
-        }
-      },
+    if (chapterDetail == null) {
+      emit(
+        state.copyWith(
+          status: ReaderStatus.failure,
+          errorMessage: 'No se pudo cargar el capítulo',
+        ),
+      );
+      return;
+    }
+
+    emit(
+      state.copyWith(
+        status: ReaderStatus.success,
+        currentChapter: chapterDetail,
+        currentChapterIndex: targetIndex,
+        currentWordIndex: 0,
+        progress: _computeBookProgress(
+          chapters: chapters,
+          chapterIndex: targetIndex,
+          chapterWordIndex: 0,
+        ),
+        clearErrorMessage: true,
+      ),
     );
+    add(const ReaderProgressSaved());
+    if (event.autoPlayTts) {
+      add(const ReaderTtsToggled());
+    }
   }
 
   Future<void> _onWordIndexChanged(
@@ -263,18 +312,38 @@ class ReaderBloc extends Bloc<ReaderEvent, ReaderState> {
     final currentChapter = state.currentChapter;
     if (currentChapter == null) return;
 
+    final maxWordIndex = _maxWordIndexForChapter(currentChapter);
+    final newWordIndex = event.wordIndex.clamp(0, maxWordIndex).toInt();
+    final currentIdx = state.currentWordIndex;
+    final delta = (newWordIndex - currentIdx).abs();
+
     debugPrint('[ReaderBloc] _onWordIndexChanged — '
         'newIdx=${event.wordIndex} '
-        'currentIdx=${state.currentWordIndex} '
+        'currentIdx=$currentIdx '
         'isTtsActive=${state.isTtsActive}');
+
+    // Reject no-op events BEFORE touching the engine. Without this guard a
+    // spurious slider onChanged carrying the current word index would still
+    // call stop() and interrupt playback for no reason.
+    if (newWordIndex == currentIdx) return;
+
+    // Defensive guard against ghost-tick events emitted by the Material
+    // Slider when it gets rebuilt on every tracker tick during TTS. On Web
+    // and Desktop the slider occasionally fires onChanged(currentIdx ± 1)
+    // or even onChanged(0) on rebuild, which used to cascade into a full
+    // stop()/restart cycle ~once a second — causing the audio to chop and
+    // appear desynchronised from the highlight. A real user drag emits
+    // onChangeEnd with a much larger delta and goes through a different
+    // path, so filtering small jitter while playing is safe.
+    if (state.isTtsActive && delta <= 3) {
+      debugPrint('[ReaderBloc] _onWordIndexChanged — '
+          'IGNORED spurious tiny delta=$delta during TTS');
+      return;
+    }
+
     if (state.isTtsActive) {
       await _ttsRepository.stop();
     }
-
-    final maxWordIndex = _maxWordIndexForChapter(currentChapter);
-    final newWordIndex = event.wordIndex.clamp(0, maxWordIndex).toInt();
-
-    if (newWordIndex == state.currentWordIndex) return;
 
     emit(
       state.copyWith(
@@ -402,10 +471,16 @@ class ReaderBloc extends Bloc<ReaderEvent, ReaderState> {
 
     if (status == TtsPlaybackStatus.playing) {
       _startTtsTimer();
+      _startForceSyncTimer();
     } else if (status == TtsPlaybackStatus.idle ||
         status == TtsPlaybackStatus.error ||
         status == TtsPlaybackStatus.completed) {
       _pauseTtsTimer();
+      _stopForceSyncTimer();
+      // Ensure the latest position is checkpointed when the user
+      // pauses or the chapter ends — critical for multi-device sync
+      // so device B picks up exactly where device A stopped.
+      add(const ReaderProgressSaved());
     }
 
     if (status == TtsPlaybackStatus.completed) {
@@ -418,6 +493,27 @@ class ReaderBloc extends Bloc<ReaderEvent, ReaderState> {
     } else {
       emit(state.copyWith(ttsStatus: status));
     }
+  }
+
+  /// Force a progress save every 15s while TTS is reading, regardless
+  /// of debounce activity. Prevents long uninterrupted sessions from
+  /// never checkpointing to the server.
+  void _startForceSyncTimer() {
+    _forceSyncTimer?.cancel();
+    _forceSyncTimer = Timer.periodic(
+      const Duration(seconds: 15),
+      (_) {
+        final now = DateTime.now();
+        if (now.difference(_lastForcedSaveAt).inSeconds < 14) return;
+        _lastForcedSaveAt = now;
+        add(const ReaderProgressSaved());
+      },
+    );
+  }
+
+  void _stopForceSyncTimer() {
+    _forceSyncTimer?.cancel();
+    _forceSyncTimer = null;
   }
 
   void _startTtsTimer() {
@@ -566,6 +662,7 @@ class ReaderBloc extends Bloc<ReaderEvent, ReaderState> {
   @override
   Future<void> close() async {
     _saveDebounceTimer?.cancel();
+    _forceSyncTimer?.cancel();
     _ttsElapsedTimer?.cancel();
     _ttsWordSub?.cancel();
     _ttsStatusSub?.cancel();

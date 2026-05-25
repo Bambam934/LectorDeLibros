@@ -28,6 +28,18 @@ abstract final class AppColors {
   static const Color warmCream = Color(0xFFF5F1E8);
   static const Color warmCreamSoft = Color(0xFFB8B0A0);
 
+  // ── Warm night surfaces (amber-tinted, reduces blue light) ──
+  // Inspired by candlelight + e-paper readers' warm mode. The base
+  // hues shift the entire UI toward amber/sepia for evening reading
+  // without the eye strain of pure dark blue.
+  static const Color warmMidnight = Color(0xFF1A1208); // deep umber
+  static const Color warmCharcoal = Color(0xFF231810); // sepia coal
+  static const Color warmCharcoalElevated = Color(0xFF2E2218);
+  static const Color warmCharcoalBorder = Color(0xFF3B2D1F);
+  static const Color warmAmberText = Color(0xFFF5E4C1); // soft amber-cream
+  static const Color warmAmberTextSoft = Color(0xFFC9B58E);
+  static const Color warmAccent = Color(0xFFFFC066); // candle amber
+
   // ── Reader-specific palettes ──
   static const Color sepiaBackground = Color(0xFFF4ECD8);
   static const Color sepiaText = Color(0xFF5C4B37);

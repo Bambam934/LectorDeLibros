@@ -6,6 +6,7 @@ import type { BookParser, ParsedBook } from './types.js';
 import { countWords } from './types.js';
 
 const CONTAINER_PATH = 'META-INF/container.xml';
+const DOCTYPE_RE = /<!DOCTYPE[^>]*(\[[\s\S]*?\])?>/gi;
 
 export class EpubParser implements BookParser {
   async parse(buffer: Buffer): Promise<ParsedBook> {
@@ -15,7 +16,8 @@ export class EpubParser implements BookParser {
     if (!containerEntry) {
       throw new Error('EPUB inválido: falta META-INF/container.xml');
     }
-	const containerXml = await parseStringPromise(containerEntry.getData().toString('utf-8'), {
+	const containerXml = await parseStringPromise(
+		containerEntry.getData().toString('utf-8').replace(DOCTYPE_RE, ''), {
 		explicitCharkey: true,
 		normalizeTags: true,
 		attrkey: '$',
@@ -33,7 +35,8 @@ export class EpubParser implements BookParser {
     if (!opfEntry) {
       throw new Error(`EPUB inválido: no se encontró ${opfPath}`);
     }
-	const opfXml = await parseStringPromise(opfEntry.getData().toString('utf-8'), {
+	const opfXml = await parseStringPromise(
+		opfEntry.getData().toString('utf-8').replace(DOCTYPE_RE, ''), {
 		explicitCharkey: true,
 		normalizeTags: true,
 		attrkey: '$',

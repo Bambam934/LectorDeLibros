@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LectorSync &mdash; Documento de Ideaci&oacute;n | EquipoEPMB02-4</title>
+  <style>
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    :root{
+      --pri:#4F46E5;--pri-l:#E0E7FF;--pri-d:#3730A3;
+      --acc:#F59E0B;--acc-l:#FEF3C7;
+      --ok:#10B981;--ok-l:#D1FAE5;
+      --err:#EF4444;
+      --bg:#F8FAFC;--sf:#FFF;
+      --tx:#1E293B;--tx2:#64748B;--tx3:#94A3B8;
+      --bd:#E2E8F0;
+      --r:12px;
+      --sh:0 1px 3px rgba(0,0,0,.08),0 1px 2px rgba(0,0,0,.06);
+      --sh2:0 10px 15px -3px rgba(0,0,0,.1),0 4px 6px -4px rgba(0,0,0,.1);
+    }
+    body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--tx);line-height:1.7;font-size:16px}
+
+    /* ── Header ── */
+    .hd{background:linear-gradient(135deg,var(--pri),var(--pri-d));color:#fff;padding:48px 24px 40px;text-align:center}
+    .hd-badge{display:inline-block;background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.2);padding:6px 18px;border-radius:999px;font-size:13px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;margin-bottom:16px}
+    .hd h1{font-size:clamp(28px,5vw,42px);font-weight:800;margin-bottom:8px;letter-spacing:-.5px}
+    .hd h1 span{color:var(--acc)}
+    .hd>p{font-size:17px;opacity:.85;max-width:660px;margin:0 auto}
+    .hd-meta{display:flex;flex-wrap:wrap;justify-content:center;gap:24px;margin-top:28px;font-size:14px}
+    .hd-meta div{display:flex;align-items:center;gap:6px;opacity:.9}
+    .hd-meta strong{font-weight:700}
+
+    /* ── Container ── */
+    .ct{max-width:920px;margin:0 auto;padding:0 20px 60px}
+
+    /* ── Section ── */
+    .sc{background:var(--sf);border:1px solid var(--bd);border-radius:var(--r);box-shadow:var(--sh);margin-top:32px;overflow:hidden}
+    .sc-h{display:flex;align-items:center;gap:12px;padding:20px 28px;border-bottom:1px solid var(--bd);background:var(--bg)}
+    .sc-ic{width:40px;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0}
+    .ic-b{background:var(--pri-l)}.ic-a{background:var(--acc-l)}.ic-g{background:var(--ok-l)}.ic-p{background:#EDE9FE}.ic-r{background:#FFE4E6}.ic-s{background:#F0F9FF}.ic-y{background:#FEF9C3}
+    .sc-h h2{font-size:20px;font-weight:700}
+    .sc-b{padding:24px 28px 28px}
+    .sc-b p{margin-bottom:16px;text-align:justify}
+    .sc-b p:last-child{margin-bottom:0}
+
+    /* ── Table ── */
+    .tw{overflow-x:auto;margin:20px 0;border-radius:8px;border:1px solid var(--bd)}
+    table{width:100%;border-collapse:collapse;font-size:14px}
+    thead th{background:var(--pri);color:#fff;text-align:left;padding:12px 16px;font-weight:600;white-space:nowrap}
+    tbody td{padding:12px 16px;border-bottom:1px solid var(--bd);vertical-align:top}
+    tbody tr:last-child td{border-bottom:none}
+    tbody tr:nth-child(even){background:#F8FAFC}
+    tbody tr:hover{background:var(--pri-l)}
+    .app-n{font-weight:700;color:var(--pri-d);white-space:nowrap}
+    .ptag{display:inline-block;background:var(--acc-l);color:#92400E;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap}
+
+    /* ── Analysis box ── */
+    .abox{background:#F0FDF4;border-left:4px solid var(--ok);padding:16px 20px;border-radius:0 8px 8px 0;margin-top:20px;font-size:15px}
+    .abox strong{color:#065F46}
+
+    /* ── Obj general ── */
+    .og{background:var(--pri-l);border-left:4px solid var(--pri);padding:18px 22px;border-radius:0 8px 8px 0;margin-bottom:24px;font-size:15px;line-height:1.8}
+
+    /* ── Obj list ── */
+    .ol{list-style:none;counter-reset:ob}
+    .ol li{counter-increment:ob;position:relative;padding:16px 16px 16px 64px;margin-bottom:12px;background:var(--bg);border:1px solid var(--bd);border-radius:8px;font-size:15px;transition:box-shadow .2s}
+    .ol li:hover{box-shadow:var(--sh2)}
+    .ol li::before{content:counter(ob);position:absolute;left:16px;top:16px;width:32px;height:32px;background:var(--pri);color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700}
+    .ol li strong{color:var(--pri-d)}
+
+    /* ── Cite ── */
+    .ci{color:var(--pri);font-weight:600}
+
+    /* ── Req table ── */
+    .rt{width:100%;border-collapse:collapse;font-size:14px;margin:16px 0}
+    .rt th{background:var(--pri);color:#fff;padding:10px 14px;text-align:left;font-weight:600}
+    .rt td{padding:12px 14px;border-bottom:1px solid var(--bd);vertical-align:top}
+    .rt tr:nth-child(even){background:#F8FAFC}
+    .rt .rid{font-weight:700;color:var(--pri);white-space:nowrap;width:80px}
+
+    /* ── Flow ── */
+    .flow{display:flex;flex-direction:column;align-items:center;gap:0;margin:20px 0}
+    .flow-box{background:var(--sf);border:2px solid var(--pri);border-radius:10px;padding:14px 24px;text-align:center;min-width:260px;position:relative}
+    .flow-box h4{font-size:15px;font-weight:700;color:var(--pri-d);margin-bottom:6px}
+    .flow-box ul{list-style:none;font-size:13px;color:var(--tx2);text-align:left}
+    .flow-box ul li::before{content:"•";color:var(--pri);margin-right:6px}
+    .flow-arr{font-size:24px;color:var(--pri);line-height:1;padding:4px 0}
+
+    /* ── Tech grid ── */
+    .tg{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;margin:16px 0}
+    .tg-item{display:flex;align-items:flex-start;gap:12px;padding:14px;background:var(--bg);border:1px solid var(--bd);border-radius:8px}
+    .tg-item .tg-dot{width:10px;height:10px;border-radius:50%;background:var(--pri);flex-shrink:0;margin-top:5px}
+    .tg-item strong{display:block;font-size:14px;color:var(--pri-d)}
+    .tg-item span{font-size:13px;color:var(--tx2)}
+
+    /* ── Mejoras list ── */
+    .ml{list-style:none;margin:16px 0}
+    .ml li{padding:12px 16px 12px 44px;margin-bottom:8px;background:var(--bg);border:1px solid var(--bd);border-radius:8px;font-size:14px;position:relative}
+    .ml li::before{content:"✦";position:absolute;left:16px;top:12px;color:var(--acc);font-size:16px}
+
+    /* ── Mockup grid ── */
+    .mk{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px;margin:16px 0}
+    .mk-card{background:var(--bg);border:1px solid var(--bd);border-radius:10px;padding:18px;text-align:center}
+    .mk-card .mk-num{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:50%;background:var(--pri);color:#fff;font-weight:700;font-size:15px;margin-bottom:10px}
+    .mk-card h4{font-size:15px;font-weight:700;color:var(--pri-d);margin-bottom:8px}
+    .mk-card ul{list-style:none;text-align:left;font-size:13px;color:var(--tx2)}
+    .mk-card ul li{padding:3px 0}
+    .mk-card ul li::before{content:"✓";color:var(--ok);margin-right:6px;font-weight:700}
+
+    /* ── Refs ── */
+    .rl{list-style:none;font-size:14px}
+    .rl li{padding:10px 0;border-bottom:1px solid var(--bd);line-height:1.6}
+    .rl li:last-child{border-bottom:none}
+    .rl em{font-style:italic}
+    .rl a{color:var(--pri);text-decoration:none;word-break:break-all}
+    .rl a:hover{text-decoration:underline}
+
+    /* ── Footer ── */
+    .ft{text-align:center;padding:32px 20px;color:var(--tx2);font-size:13px;border-top:1px solid var(--bd);margin-top:40px}
+    .ft strong{color:var(--pri)}
+
+    /* ── Print ── */
+    @media print{
+      body{background:#fff;font-size:11pt}
+      .hd{padding:24px;background:var(--pri)!important;print-color-adjust:exact;-webkit-print-color-adjust:exact}
+      .sc{box-shadow:none;break-inside:avoid}
+      .ol li{break-inside:avoid}
+    }
+    @media(max-width:640px){
+      .hd{padding:32px 16px 28px}
+      .sc-b{padding:18px 16px 20px}
+      .hd-meta{flex-direction:column;gap:8px}
+      .ol li{padding-left:52px}
+      .mk{grid-template-columns:1fr 1fr}
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══ HEADER ═══ -->
+<header class="hd">
+  <div class="hd-badge">Foro de Proyecto &mdash; Ideaci&oacute;n</div>
+  <h1>Lector<span>Sync</span></h1>
+  <p>Lectura digital sincronizada con s&iacute;ntesis de voz y resaltado visual palabra por palabra en tiempo real</p>
+  <div class="hd-meta">
+    <div><strong>Equipo:</strong> EquipoEPMB02 - 4</div>
+    <div><strong>Programa:</strong> Esp. Tecnol&oacute;gica en Desarrollo de Apps para Redes M&oacute;viles</div>
+    <div><strong>M&oacute;dulo:</strong> &Eacute;nfasis en Programaci&oacute;n M&oacute;vil</div>
+    <div><strong>Fecha:</strong> Mayo 2026</div>
+  </div>
+</header>
+
+<div class="ct">
+
+<!-- ═══ 1. SINOPSIS ═══ -->
+<section class="sc">
+  <div class="sc-h"><div class="sc-ic ic-b">&#128214;</div><h2>1. Sinopsis</h2></div>
+  <div class="sc-b">
+    <p>LectorSync es una aplicaci&oacute;n m&oacute;vil multiplataforma orientada a mejorar la experiencia de lectura digital mediante la integraci&oacute;n de s&iacute;ntesis de voz (Text-to-Speech) y resaltado visual sincronizado palabra por palabra en tiempo real.</p>
+    <p>La aplicaci&oacute;n permitir&aacute; a los usuarios cargar y visualizar libros digitales, organiz&aacute;ndolos dentro de una biblioteca personal para facilitar su acceso y lectura.</p>
+    <p>Durante la lectura, el usuario podr&aacute; escuchar el contenido mediante s&iacute;ntesis de voz mientras el texto se resalta de forma sincronizada en pantalla. Adem&aacute;s, la interfaz permitir&aacute; personalizar el tama&ntilde;o de fuente, ajustar la velocidad de reproducci&oacute;n y guardar el progreso de lectura de manera local.</p>
+    <p>LectorSync est&aacute; dirigida a estudiantes, lectores habituales y personas con dislexia, baja visi&oacute;n o dificultades de aprendizaje, ofreciendo una experiencia de lectura m&aacute;s accesible, interactiva e inclusiva.</p>
+    <p>La aplicaci&oacute;n ser&aacute; desarrollada con Ionic y Capacitor para garantizar compatibilidad multiplataforma en Android e iOS a partir de una &uacute;nica base de c&oacute;digo.</p>
+  </div>
+</section>
+
+<!-- ═══ 2. REFERENCIAS ═══ -->
+<section class="sc">
+  <div class="sc-h"><div class="sc-ic ic-a">&#128279;</div><h2>2. Referencias de Aplicaciones Pertinentes</h2></div>
+  <div class="sc-b">
+    <p>Seg&uacute;n <span class="ci">Atlas AI Dev (2026)</span>, existe un ecosistema creciente de aplicaciones de lectura con Text-to-Speech que atienden diferentes segmentos del mercado. A continuaci&oacute;n se presentan las referencias m&aacute;s pertinentes para LectorSync:</p>
+    <div class="tw">
+      <table>
+        <thead><tr><th>Software</th><th>Lo mejor para</th><th>Caracter&iacute;stica destacada</th><th>Precio inicial</th></tr></thead>
+        <tbody>
+          <tr><td class="app-n">Speechify</td><td>Estudiantes y profesionales que necesitan escuchar documentos</td><td>M&aacute;s de 200 voces premium con IA, OCR para escanear p&aacute;ginas f&iacute;sicas, ganadora del Apple Design Award WWDC 2025</td><td><span class="ptag">Gratis / $139/a&ntilde;o</span></td></tr>
+          <tr><td class="app-n">Voice Dream Reader</td><td>Personas con dislexia y discapacidad visual</td><td>Resaltado palabra por palabra sincronizado con TTS, casi 200 voces en 25+ idiomas, referente en accesibilidad educativa</td><td><span class="ptag">$19.99 USD (iOS)</span></td></tr>
+          <tr><td class="app-n">NaturalReader</td><td>Lectura de documentos y p&aacute;ginas web en voz alta</td><td>1.000+ voces con tecnolog&iacute;a neural TTS y LLM, disponible como app web, m&oacute;vil y extensi&oacute;n Chrome</td><td><span class="ptag">Gratis / $60/a&ntilde;o</span></td></tr>
+          <tr><td class="app-n">Moon+ Reader</td><td>Lectores digitales en Android que buscan personalizaci&oacute;n</td><td>EPUB, PDF, MOBI, CBR; +50M descargas en Google Play; TTS integrado con personalizaci&oacute;n visual</td><td><span class="ptag">Gratis / $6.99 Pro</span></td></tr>
+          <tr><td class="app-n">Amazon Kindle</td><td>Ecosistema completo de lectura y audiolibros</td><td>Whispersync entre dispositivos, integraci&oacute;n Audible, VoiceView para accesibilidad, +100M usuarios</td><td><span class="ptag">Gratis / $11.99/mes</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="abox">
+      <strong>An&aacute;lisis comparativo:</strong> Speechify y Voice Dream Reader lideran en calidad de TTS y accesibilidad, pero se enfocan en reproducci&oacute;n de documentos sin lectura inmersiva por cap&iacute;tulos. Moon+ Reader ofrece la mejor personalizaci&oacute;n pero carece de sincronizaci&oacute;n visual avanzada. Kindle domina el mercado pero es cerrado y dependiente de Amazon. <strong>LectorSync se diferencia</strong> al combinar lectura por cap&iacute;tulos con TTS sincronizado palabra por palabra, soporte multiformat abierto y almacenamiento local de progreso, desde una base de c&oacute;digo multiplataforma con Ionic.
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 3. OBJETIVO GENERAL ═══ -->
+<section class="sc">
+  <div class="sc-h"><div class="sc-ic ic-g">&#127919;</div><h2>3. Objetivo General</h2></div>
+  <div class="sc-b">
+    <div class="og">
+      <p>Desarrollar LectorSync, una aplicaci&oacute;n m&oacute;vil multiplataforma orientada a mejorar la experiencia de lectura digital mediante la integraci&oacute;n de s&iacute;ntesis de voz y resaltado visual sincronizado en tiempo real, permitiendo a los usuarios visualizar y escuchar libros digitales desde una interfaz accesible, interactiva y adaptable a diferentes dispositivos.</p>
+      <p style="margin-top:12px">La aplicaci&oacute;n buscar&aacute; facilitar el acceso a la lectura para estudiantes, lectores habituales y personas con dificultades visuales o de aprendizaje, incorporando funcionalidades de personalizaci&oacute;n que contribuyan a una experiencia de lectura m&aacute;s c&oacute;moda, din&aacute;mica e inclusiva en entornos Android e iOS.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 4. OBJETIVOS ESPECÍFICOS ═══ -->
+<section class="sc">
+  <div class="sc-h"><div class="sc-ic ic-g">&#9989;</div><h2>4. Objetivos Espec&iacute;ficos</h2></div>
+  <div class="sc-b">
+    <ol class="ol">
+      <li><strong>Dise&ntilde;ar la estructura y arquitectura multiplataforma</strong> de la aplicaci&oacute;n utilizando tecnolog&iacute;as h&iacute;bridas que permitan su funcionamiento en dispositivos Android e iOS desde una &uacute;nica base de c&oacute;digo, garantizando una experiencia de usuario coherente e intuitiva.</li>
+      <li><strong>Desarrollar una biblioteca digital</strong> que permita a los usuarios cargar, organizar y visualizar libros digitales dentro de la aplicaci&oacute;n, facilitando el acceso al contenido de lectura desde una interfaz sencilla y accesible.</li>
+      <li><strong>Integrar funcionalidades de s&iacute;ntesis de voz (Text-to-Speech)</strong> junto con resaltado visual sincronizado del texto en tiempo real, con el fin de ofrecer una experiencia de lectura interactiva y de apoyo para usuarios con diferentes necesidades de accesibilidad.</li>
+      <li><strong>Incorporar opciones b&aacute;sicas de configuraci&oacute;n</strong> en la interfaz de lectura con el prop&oacute;sito de ofrecer una experiencia de usuario m&aacute;s c&oacute;moda y adaptable.</li>
+      <li><strong>Desarrollar mecanismos de almacenamiento local</strong> que permitan conservar el progreso de lectura y las preferencias del usuario dentro de la aplicaci&oacute;n, facilitando la continuidad de uso entre sesiones.</li>
+      <li><strong>Validar el correcto funcionamiento</strong> de la aplicaci&oacute;n en diferentes plataformas y tama&ntilde;os de pantalla, garantizando compatibilidad, estabilidad y una experiencia de navegaci&oacute;n adecuada en entornos m&oacute;viles.</li>
+    </ol>
+  </div>
+</section>
+
+<!-- ═══ 5. JUSTIFICACIÓN ═══ -->
+<section class="sc">
+  <div class="sc-h"><div class="sc-ic ic-p">&#128218;</div><h2>5. Justificaci&oacute;n</h2></div>
+  <div class="sc-b">
+    <p>La expansi&oacute;n de la lectura digital y el crecimiento en el uso de herramientas tecnol&oacute;gicas para el aprendizaje han generado nuevas necesidades relacionadas con la accesibilidad, la inclusi&oacute;n y las experiencias de lectura interactivas. En Colombia, el aumento del acceso a dispositivos m&oacute;viles y plataformas digitales ha impulsado el consumo de contenido electr&oacute;nico tanto en contextos educativos como personales. Sin embargo, muchas aplicaciones de lectura actuales no incorporan herramientas de accesibilidad que faciliten la experiencia de usuarios con dislexia, baja visi&oacute;n o dificultades de aprendizaje.</p>
+    <p>En este contexto, LectorSync surge como una propuesta orientada a mejorar la experiencia de lectura digital mediante la integraci&oacute;n de s&iacute;ntesis de voz (Text-to-Speech) y resaltado visual sincronizado del texto en tiempo real. Estas funcionalidades buscan facilitar la comprensi&oacute;n del contenido y ofrecer una experiencia de lectura m&aacute;s din&aacute;mica, accesible e interactiva para diferentes tipos de usuarios, especialmente estudiantes y personas con necesidades de accesibilidad.</p>
+    <p>Asimismo, el desarrollo de la aplicaci&oacute;n mediante Ionic y Capacitor permite implementar una soluci&oacute;n multiplataforma compatible con Android e iOS a partir de una &uacute;nica base de c&oacute;digo, facilitando el desarrollo y ampliando el acceso desde distintos dispositivos y sistemas operativos.</p>
+    <p>LectorSync representa una alternativa tecnol&oacute;gica enfocada en la accesibilidad digital y el apoyo a procesos de lectura y aprendizaje, promoviendo el acceso al contenido digital desde una experiencia m&aacute;s inclusiva y adaptable a las necesidades de los usuarios.</p>
+  </div>
+</section>
+
+<!-- ═══ 6. ALCANCE ═══ -->
+<section class="sc">
+  <div class="sc-h"><div class="sc-ic ic-s">&#128506;</div><h2>6. Alcance del Proyecto</h2></div>
+  <div class="sc-b">
+    <p>LectorSync estar&aacute; enfocada en ofrecer una experiencia de lectura digital accesible e interactiva para dispositivos Android e iOS mediante tecnolog&iacute;as multiplataforma.</p>
+    <p>La primera versi&oacute;n de la aplicaci&oacute;n incluir&aacute; funcionalidades b&aacute;sicas orientadas a la visualizaci&oacute;n de libros digitales, reproducci&oacute;n de texto mediante s&iacute;ntesis de voz y resaltado visual sincronizado durante la lectura.</p>
+    <p>Asimismo, la aplicaci&oacute;n permitir&aacute; organizar los libros dentro de una biblioteca digital y conservar de manera local el progreso de lectura y algunas preferencias b&aacute;sicas del usuario.</p>
+    <p style="background:var(--acc-l);border-left:4px solid var(--acc);padding:14px 18px;border-radius:0 8px 8px 0;margin-top:8px">
+      <strong>Fuera del alcance:</strong> No se contemplar&aacute;n funcionalidades avanzadas como sincronizaci&oacute;n en la nube, integraci&oacute;n con plataformas externas, tienda de libros digitales o caracter&iacute;sticas sociales entre usuarios.
+    </p>
+  </div>
+</section>
+
+<!-- ═══ 7. METODOLOGÍA ═══ -->
+<section class="sc">
+  <div class="sc-h"><div class="sc-ic ic-a">&#128736;</div><h2>7. Metodolog&iacute;a de Desarrollo</h2></div>
+  <div class="sc-b">
+    <p>Para el desarrollo de LectorSync se utilizar&aacute; una <strong>metodolog&iacute;a &aacute;gil basada en Scrum</strong>, permitiendo organizar el proyecto en ciclos de trabajo cortos e iterativos orientados al desarrollo progresivo de funcionalidades y a la mejora continua de la aplicaci&oacute;n.</p>
+    <p>El proyecto ser&aacute; dividido en peque&ntilde;os sprints de trabajo, en los cuales se realizar&aacute;n actividades de an&aacute;lisis, dise&ntilde;o, desarrollo, pruebas y retroalimentaci&oacute;n. Este enfoque permitir&aacute; evaluar constantemente el avance del proyecto, identificar posibles errores de manera temprana y realizar ajustes durante el proceso de desarrollo.</p>
+    <p>La metodolog&iacute;a &aacute;gil facilitar&aacute; adem&aacute;s la distribuci&oacute;n de tareas entre los integrantes del equipo, promoviendo la colaboraci&oacute;n, la adaptabilidad y el cumplimiento de los objetivos establecidos para el proyecto acad&eacute;mico.</p>
+  </div>
+</section>
+
+<!-- ═══ 8. ARQUITECTURA ═══ -->
+<section class="sc">
+  <div class="sc-h"><div class="sc-ic ic-b">&#127959;</div><h2>8. Arquitectura General del Sistema</h2></div>
+  <div class="sc-b">
+    <h3 style="font-size:16px;font-weight:700;color:var(--pri-d);margin-bottom:10px">Frontend</h3>
+    <p>La aplicaci&oacute;n ser&aacute; desarrollada utilizando <strong>Ionic con Angular y Capacitor</strong>, permitiendo la creaci&oacute;n de una interfaz multiplataforma compatible con Android e iOS desde una &uacute;nica base de c&oacute;digo. El frontend estar&aacute; encargado de la interacci&oacute;n con el usuario, visualizaci&oacute;n de libros digitales y control de las funcionalidades de lectura y s&iacute;ntesis de voz.</p>
+
+    <h3 style="font-size:16px;font-weight:700;color:var(--pri-d);margin:20px 0 10px">Persistencia Local</h3>
+    <p>La aplicaci&oacute;n utilizar&aacute; almacenamiento local del dispositivo para conservar informaci&oacute;n relacionada con el progreso de lectura y algunas preferencias b&aacute;sicas del usuario, permitiendo mantener la continuidad de uso entre sesiones sin necesidad de conexi&oacute;n permanente a internet.</p>
+
+    <h3 style="font-size:16px;font-weight:700;color:var(--pri-d);margin:20px 0 10px">Servicios de Lectura y S&iacute;ntesis de Voz</h3>
+    <p>LectorSync integrar&aacute; funcionalidades de s&iacute;ntesis de voz mediante herramientas compatibles con tecnolog&iacute;as web y capacidades nativas del dispositivo, permitiendo la reproducci&oacute;n del contenido textual y el resaltado visual sincronizado durante la lectura.</p>
+  </div>
+</section>
+
+<!-- ═══ 9. REQ. FUNCIONALES ═══ -->
+<section class="sc">
+  <div class="sc-h"><div class="sc-ic ic-g">&#128203;</div><h2>9. Requerimientos Funcionales</h2></div>
+  <div class="sc-b">
+    <table class="rt">
+      <thead><tr><th>ID</th><th>Descripci&oacute;n</th></tr></thead>
+      <tbody>
+        <tr><td class="rid">RF-01</td><td>La aplicaci&oacute;n deber&aacute; permitir la carga y visualizaci&oacute;n de libros digitales dentro de una biblioteca personal.</td></tr>
+        <tr><td class="rid">RF-02</td><td>El sistema deber&aacute; permitir la lectura de contenido digital mediante una interfaz accesible e interactiva.</td></tr>
+        <tr><td class="rid">RF-03</td><td>La aplicaci&oacute;n deber&aacute; integrar funcionalidades de s&iacute;ntesis de voz para la reproducci&oacute;n del contenido textual.</td></tr>
+        <tr><td class="rid">RF-04</td><td>El sistema deber&aacute; resaltar visualmente el texto durante la reproducci&oacute;n de voz de manera sincronizada.</td></tr>
+        <tr><td class="rid">RF-05</td><td>El usuario podr&aacute; iniciar, pausar y detener la reproducci&oacute;n de lectura por voz.</td></tr>
+        <tr><td class="rid">RF-06</td><td>La aplicaci&oacute;n deber&aacute; permitir realizar ajustes b&aacute;sicos de visualizaci&oacute;n durante la lectura.</td></tr>
+        <tr><td class="rid">RF-07</td><td>El sistema deber&aacute; almacenar localmente el progreso de lectura del usuario.</td></tr>
+        <tr><td class="rid">RF-08</td><td>La aplicaci&oacute;n deber&aacute; permitir retomar la lectura desde el &uacute;ltimo punto guardado.</td></tr>
+        <tr><td class="rid">RF-09</td><td>La interfaz deber&aacute; permitir una navegaci&oacute;n sencilla entre las diferentes secciones de la aplicaci&oacute;n.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ═══ 10. REQ. NO FUNCIONALES ═══ -->
+<section class="sc">
+  <div class="sc-h"><div class="sc-ic ic-r">&#128274;</div><h2>10. Requerimientos No Funcionales</h2></div>
+  <div class="sc-b">
+    <table class="rt">
+      <thead><tr><th>ID</th><th>Descripci&oacute;n</th></tr></thead>
+      <tbody>
+        <tr><td class="rid">RNF-01</td><td>La aplicaci&oacute;n deber&aacute; ser compatible con dispositivos Android e iOS mediante un enfoque multiplataforma.</td></tr>
+        <tr><td class="rid">RNF-02</td><td>La interfaz gr&aacute;fica deber&aacute; ser intuitiva, accesible y de f&aacute;cil navegaci&oacute;n para los usuarios.</td></tr>
+        <tr><td class="rid">RNF-03</td><td>La aplicaci&oacute;n deber&aacute; adaptarse correctamente a diferentes tama&ntilde;os de pantalla y resoluciones.</td></tr>
+        <tr><td class="rid">RNF-04</td><td>El sistema deber&aacute; mantener una sincronizaci&oacute;n fluida entre la reproducci&oacute;n de voz y el resaltado visual del texto durante la lectura.</td></tr>
+        <tr><td class="rid">RNF-05</td><td>La aplicaci&oacute;n deber&aacute; ofrecer tiempos de respuesta adecuados durante la navegaci&oacute;n y carga de contenido.</td></tr>
+        <tr><td class="rid">RNF-06</td><td>El sistema deber&aacute; minimizar el consumo innecesario de recursos del dispositivo para garantizar un funcionamiento estable.</td></tr>
+        <tr><td class="rid">RNF-07</td><td>La aplicaci&oacute;n deber&aacute; mantener la informaci&oacute;n b&aacute;sica del usuario y el progreso de lectura almacenados localmente durante el uso.</td></tr>
+        <tr><td class="rid">RNF-08</td><td>La aplicaci&oacute;n deber&aacute; presentar un funcionamiento estable en dispositivos m&oacute;viles.</td></tr>
+        <tr><td class="rid">RNF-09</td><td>La estructura de la aplicaci&oacute;n deber&aacute; permitir futuras mejoras y ampliaciones funcionales sin afectar la arquitectura principal del sistema.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ═══ 11. FLUJO DE NAVEGACIÓN ═══ -->
+<section class="sc">
+  <div class="sc-h"><div class="sc-ic ic-b">&#128260;</div><h2>11. Flujo de Navegaci&oacute;n</h2></div>
+  <div class="sc-b">
+    <div class="flow">
+      <div class="flow-box">
+        <h4>Pantalla de Inicio</h4>
+        <ul><li>Logo de la aplicaci&oacute;n</li><li>Inicio de sesi&oacute;n</li><li>Registro</li></ul>
+      </div>
+      <div class="flow-arr">&darr;</div>
+      <div class="flow-box">
+        <h4>Biblioteca Personal</h4>
+        <ul><li>Lista de libros</li><li>Barra de b&uacute;squeda</li><li>Bot&oacute;n importar libro</li></ul>
+      </div>
+      <div class="flow-arr">&darr;</div>
+      <div class="flow-box">
+        <h4>Vista del Libro</h4>
+        <ul><li>Portada</li><li>Informaci&oacute;n general</li><li>Tabla de contenidos</li></ul>
+      </div>
+      <div class="flow-arr">&darr;</div>
+      <div class="flow-box" style="border-color:var(--acc);background:var(--acc-l)">
+        <h4 style="color:#92400E">Lector Digital</h4>
+        <ul><li>Texto sincronizado</li><li>Resaltado palabra por palabra</li><li>Controles TTS</li><li>Ajuste de velocidad</li><li>Ajuste de fuente</li></ul>
+      </div>
+      <div class="flow-arr">&darr;</div>
+      <div class="flow-box">
+        <h4>Configuraci&oacute;n</h4>
+        <ul><li>Tema oscuro/claro</li><li>Preferencias de voz</li><li>Velocidad predeterminada</li></ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 12. MOCKUPS ═══ -->
+<section class="sc">
+  <div class="sc-h"><div class="sc-ic ic-a">&#127912;</div><h2>12. Mockups / Wireframes</h2></div>
+  <div class="sc-b">
+    <div class="mk">
+      <div class="mk-card">
+        <div class="mk-num">1</div>
+        <h4>Inicio de Sesi&oacute;n</h4>
+        <ul><li>Logo LectorSync</li><li>Campo correo</li><li>Campo contrase&ntilde;a</li><li>Bot&oacute;n iniciar sesi&oacute;n</li><li>Bot&oacute;n registrarse</li></ul>
+      </div>
+      <div class="mk-card">
+        <div class="mk-num">2</div>
+        <h4>Biblioteca</h4>
+        <ul><li>Barra superior</li><li>Lista de libros</li><li>Imagen de portada</li><li>Barra de progreso</li><li>Bot&oacute;n agregar libro</li></ul>
+      </div>
+      <div class="mk-card">
+        <div class="mk-num">3</div>
+        <h4>Lector</h4>
+        <ul><li>Texto del libro</li><li>Palabra resaltada</li><li>Controles play/pause</li><li>Control velocidad</li><li>Cambio tama&ntilde;o fuente</li></ul>
+      </div>
+      <div class="mk-card">
+        <div class="mk-num">4</div>
+        <h4>Configuraci&oacute;n</h4>
+        <ul><li>Selecci&oacute;n de voz</li><li>Tema oscuro</li><li>Preferencias de lectura</li></ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 13. TECNOLOGÍAS ═══ -->
+<section class="sc">
+  <div class="sc-h"><div class="sc-ic ic-b">&#128187;</div><h2>13. Tecnolog&iacute;as Utilizadas</h2></div>
+  <div class="sc-b">
+    <div class="tg">
+      <div class="tg-item"><div class="tg-dot"></div><div><strong>Ionic</strong><span>Framework para el desarrollo de la interfaz m&oacute;vil multiplataforma.</span></div></div>
+      <div class="tg-item"><div class="tg-dot"></div><div><strong>Angular</strong><span>Framework de desarrollo web para componentes, navegaci&oacute;n y l&oacute;gica de la aplicaci&oacute;n.</span></div></div>
+      <div class="tg-item"><div class="tg-dot"></div><div><strong>Capacitor</strong><span>Herramienta de integraci&oacute;n y compatibilidad con dispositivos Android e iOS.</span></div></div>
+      <div class="tg-item"><div class="tg-dot"></div><div><strong>Web Speech API</strong><span>Tecnolog&iacute;a para implementar s&iacute;ntesis de voz (TTS) durante la lectura.</span></div></div>
+      <div class="tg-item"><div class="tg-dot"></div><div><strong>HTML5</strong><span>Lenguaje de marcado para la estructura y organizaci&oacute;n visual de la aplicaci&oacute;n.</span></div></div>
+      <div class="tg-item"><div class="tg-dot"></div><div><strong>CSS3</strong><span>Tecnolog&iacute;a para el dise&ntilde;o visual, estilos y adaptaci&oacute;n responsive.</span></div></div>
+      <div class="tg-item"><div class="tg-dot"></div><div><strong>TypeScript</strong><span>Lenguaje de programaci&oacute;n para la l&oacute;gica funcional de la aplicaci&oacute;n.</span></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 14. MEJORAS FUTURAS ═══ -->
+<section class="sc">
+  <div class="sc-h"><div class="sc-ic ic-y">&#128161;</div><h2>14. Posibles Mejoras Futuras</h2></div>
+  <div class="sc-b">
+    <p>Como parte de la evoluci&oacute;n del proyecto, LectorSync podr&aacute; incorporar nuevas funcionalidades orientadas a mejorar la experiencia de lectura y ampliar las capacidades de la aplicaci&oacute;n:</p>
+    <ul class="ml">
+      <li>Integraci&oacute;n de tecnolog&iacute;as de inteligencia artificial para generar voces m&aacute;s naturales y expresivas durante la lectura.</li>
+      <li>Implementaci&oacute;n de sincronizaci&oacute;n en la nube para conservar el progreso de lectura entre diferentes dispositivos.</li>
+      <li>Incorporaci&oacute;n de un modo offline m&aacute;s completo para permitir el acceso a libros sin conexi&oacute;n a internet.</li>
+      <li>Desarrollo de herramientas adicionales como marcadores, notas personales y resaltado de fragmentos de texto.</li>
+      <li>Inclusi&oacute;n de estad&iacute;sticas de lectura y seguimiento de progreso del usuario.</li>
+      <li>Implementaci&oacute;n de sistemas de recomendaci&oacute;n de libros basados en preferencias de lectura.</li>
+      <li>Posible integraci&oacute;n con plataformas de audiolibros y contenido digital externo.</li>
+      <li>Ampliaci&oacute;n de opciones de accesibilidad y personalizaci&oacute;n dentro de la interfaz de lectura.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ═══ 15. IMPACTO ESPERADO ═══ -->
+<section class="sc">
+  <div class="sc-h"><div class="sc-ic ic-g">&#127793;</div><h2>15. Impacto Esperado</h2></div>
+  <div class="sc-b">
+    <p>LectorSync busca contribuir al fortalecimiento de la accesibilidad en entornos de lectura digital mediante el uso de herramientas tecnol&oacute;gicas orientadas a mejorar la experiencia de los usuarios durante el proceso de lectura.</p>
+    <p>La aplicaci&oacute;n pretende beneficiar especialmente a estudiantes, lectores habituales y personas con dificultades visuales o de aprendizaje, ofreciendo una alternativa de lectura m&aacute;s interactiva, din&aacute;mica y accesible a trav&eacute;s de la integraci&oacute;n de s&iacute;ntesis de voz y resaltado visual sincronizado.</p>
+    <p>Asimismo, se espera que la aplicaci&oacute;n incentive h&aacute;bitos de lectura digital y facilite el acceso al contenido educativo desde diferentes dispositivos, promoviendo experiencias de aprendizaje m&aacute;s inclusivas y adaptables a las necesidades de los usuarios.</p>
+    <p>Finalmente, LectorSync representa una propuesta acad&eacute;mica orientada al aprovechamiento de tecnolog&iacute;as multiplataforma para el desarrollo de soluciones m&oacute;viles enfocadas en accesibilidad, experiencia de usuario e inclusi&oacute;n digital.</p>
+  </div>
+</section>
+
+<!-- ═══ 16. CONCLUSIÓN ═══ -->
+<section class="sc">
+  <div class="sc-h"><div class="sc-ic ic-p">&#128220;</div><h2>16. Conclusi&oacute;n</h2></div>
+  <div class="sc-b">
+    <p>LectorSync representa una propuesta tecnol&oacute;gica orientada a mejorar la experiencia de lectura digital mediante la integraci&oacute;n de herramientas de accesibilidad como la s&iacute;ntesis de voz y el resaltado visual sincronizado del texto. A trav&eacute;s de un enfoque multiplataforma, la aplicaci&oacute;n busca ofrecer una experiencia de lectura m&aacute;s interactiva, c&oacute;moda e inclusiva para diferentes tipos de usuarios.</p>
+    <p>El desarrollo de la aplicaci&oacute;n utilizando tecnolog&iacute;as h&iacute;bridas como Ionic y Capacitor permite implementar una soluci&oacute;n compatible con Android e iOS desde una &uacute;nica base de c&oacute;digo, facilitando el desarrollo y optimizando recursos dentro del contexto acad&eacute;mico del proyecto.</p>
+    <p>Asimismo, el proyecto permite aplicar y fortalecer los conocimientos adquiridos durante la especializaci&oacute;n tecnol&oacute;gica en &aacute;reas relacionadas con desarrollo m&oacute;vil, interfaces de usuario, accesibilidad digital y tecnolog&iacute;as multiplataforma, consolidando una propuesta funcional alineada con las necesidades actuales de transformaci&oacute;n digital y acceso inclusivo a la informaci&oacute;n.</p>
+  </div>
+</section>
+
+<!-- ═══ REFERENCIAS ═══ -->
+<section class="sc">
+  <div class="sc-h"><div class="sc-ic ic-r">&#128209;</div><h2>Referencias</h2></div>
+  <div class="sc-b">
+    <ul class="rl">
+      <li>Atlas AI Dev. (2026). <em>9 Best Text-to-Speech Book Readers in 2026 (Free and Paid)</em>. <a href="https://atlasaidev.com/best-text-to-speech-book-readers/" target="_blank">https://atlasaidev.com/best-text-to-speech-book-readers/</a></li>
+      <li>Bi&oslash;rn-Hansen, A., Majchrzak, T. A., &amp; Gr&oslash;nli, T.-M. (2020). Progressive Web Apps for the Unified Development of Mobile Applications. <em>Web Information Systems and Technologies</em>, 64-86. Springer. <a href="https://doi.org/10.1007/978-3-030-35510-4_4" target="_blank">https://doi.org/10.1007/978-3-030-35510-4_4</a></li>
+      <li>CAST. (2022). <em>Universal Design for Learning Guidelines version 3.0</em>. CAST, Inc. <a href="https://udlguidelines.cast.org/" target="_blank">https://udlguidelines.cast.org/</a></li>
+      <li>GMInsights. (2025). <em>Audiobooks Market Trends, Share and Forecast, 2025-2034</em>. Global Market Insights. <a href="https://www.gminsights.com/industry-analysis/audiobooks-market" target="_blank">https://www.gminsights.com/industry-analysis/audiobooks-market</a></li>
+      <li>Ionic Framework. (2024). <em>Ionic Framework - Cross-Platform Mobile App Development Leader</em>. <a href="https://ionicframework.com/" target="_blank">https://ionicframework.com/</a></li>
+      <li>MarketsandMarkets. (2025). <em>Text-to-Speech Market Size, Share, Trends &amp; Industry Analysis 2033</em>. <a href="https://www.marketsandmarkets.com/Market-Reports/text-to-speech-market-2434298.html" target="_blank">https://www.marketsandmarkets.com/Market-Reports/text-to-speech-market-2434298.html</a></li>
+      <li>MinTIC. (2024). <em>Colombia super&oacute; los 48 millones de accesos a Internet m&oacute;vil en el tercer trimestre del 2024</em>. <a href="https://www.mintic.gov.co/portal/715/w3-article-399983.html" target="_blank">https://www.mintic.gov.co/portal/715/w3-article-399983.html</a></li>
+      <li>MoonReader Inc. (2024). <em>Moon+ Reader - eBook Reader</em>. Google Play Store. <a href="https://play.google.com/store/apps/details?id=com.flyersoft.moonreader" target="_blank">https://play.google.com/store/apps/details?id=com.flyersoft.moonreader</a></li>
+      <li>Organizaci&oacute;n Mundial de la Salud. (2023). <em>Ceguera y discapacidad visual: Datos y cifras</em>. OMS. <a href="https://www.who.int/es/news-room/fact-sheets/detail/blindness-and-visual-impairment" target="_blank">https://www.who.int/es/news-room/fact-sheets/detail/blindness-and-visual-impairment</a></li>
+      <li>RipenApps. (2025). <em>Cross-Platform App Development Statistics 2025</em>. <a href="https://ripenapps.com/blog/cross-platform-app-development-statistics/" target="_blank">https://ripenapps.com/blog/cross-platform-app-development-statistics/</a></li>
+      <li>Speechify. (2025). <em>Voice Dream Reader vs NaturalReader</em>. <a href="https://speechify.com/blog/natural-reader-vs-voice-dream/" target="_blank">https://speechify.com/blog/natural-reader-vs-voice-dream/</a></li>
+      <li>Statista. (2025). <em>eBooks - Worldwide: Statista Market Forecast</em>. <a href="https://www.statista.com/outlook/dmo/digital-media/epublishing/ebooks/worldwide" target="_blank">https://www.statista.com/outlook/dmo/digital-media/epublishing/ebooks/worldwide</a></li>
+      <li>Trustonic. (2024). <em>Brecha digital en Colombia: conectividad y 5G</em>. <a href="https://www.trustonic.com/la-es/opinion/brecha-digital-colombia-conectividad-5g/" target="_blank">https://www.trustonic.com/la-es/opinion/brecha-digital-colombia-conectividad-5g/</a></li>
+      <li>UNESCO. (2023). <em>Informe de seguimiento de la educaci&oacute;n en el mundo 2023: Tecnolog&iacute;a en la educaci&oacute;n</em>. <a href="https://www.unesco.org/gem-report/2023" target="_blank">https://www.unesco.org/gem-report/2023</a></li>
+    </ul>
+  </div>
+</section>
+
+</div>
+
+<footer class="ft">
+  <strong>LectorSync</strong> &mdash; Lectura sincronizada en Android &amp; iOS con Ionic + Capacitor<br>
+  EquipoEPMB02 - 4 &bull; Especializaci&oacute;n Tecnol&oacute;gica en Desarrollo de Aplicaciones para Redes M&oacute;viles &bull; Mayo 2026
+</footer>
+
+</body>
+</html>

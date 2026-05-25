@@ -50,6 +50,31 @@ abstract final class AppTheme {
     );
   }
 
+  /// Warm night reading theme — amber/sepia-tinted dark mode that
+  /// removes blue light for evening reading without eye strain.
+  /// Inspired by e-paper readers' warm light mode and candle-lit
+  /// reading. Use via [AppThemeMode.warm].
+  static ThemeData get warm {
+    final scheme = ColorScheme.fromSeed(
+      seedColor: AppColors.warmAccent,
+      brightness: Brightness.dark,
+    ).copyWith(
+      primary: AppColors.warmAccent,
+      // Slightly muted secondary/tertiary so the whole UI stays in the
+      // amber/sepia family — no cool blues bleeding through.
+      secondary: const Color(0xFFE8A87C),
+      tertiary: const Color(0xFFD4A574),
+      surface: AppColors.warmCharcoal,
+      surfaceContainerHighest: AppColors.warmCharcoalElevated,
+      outlineVariant: AppColors.warmCharcoalBorder,
+      onSurface: AppColors.warmAmberText,
+      onSurfaceVariant: AppColors.warmAmberTextSoft,
+    );
+    return _baseTheme(scheme).copyWith(
+      scaffoldBackgroundColor: AppColors.warmMidnight,
+    );
+  }
+
   static ThemeData _baseTheme(ColorScheme scheme) {
     final isDark = scheme.brightness == Brightness.dark;
 

@@ -73,7 +73,7 @@ export class ElevenLabsTtsProvider implements TtsProvider {
       const ch = chars[i]!;
       const startTime = charStartTimesMs[i]!;
 
-      if (ch === ' ') {
+      if (ch === ' ' || ch === '\n' || ch === '\r' || ch === '\t' || ch === ' ') {
         if (currentWordStart !== null) {
           result.push({ word_index: wordIndex++, timestamp_ms: currentWordStart });
           currentWordStart = null;

@@ -17,9 +17,26 @@ import { hashPassword, verifyPassword } from '../../core/password.js';
 import { createTtsProvider } from '../../core/tts/index.js';
 import { env } from '../../core/env.js';
 import { detectFormat, isSupportedFormat, parseBookFile } from '../../core/parsers/index.js';
+import { realtimeBus, type RealtimeEvent } from '../../core/realtime-bus.js';
 import { getDatabaseUnavailableReason, getDb } from '../../db/client.js';
 import { books, chapterAudio, chapters, readingProgress, users } from '../../db/schema.js';
 import { revokeToken, isTokenRevoked } from '../../core/token-revocation.js';
+
+/** Reads the originating device's clientId from headers. Clients should
+ *  generate a stable UUID at first launch and resend it on every mutation.
+ *  Used so the SSE push for a write can be tagged with its originator,
+ *  letting that same device discard the echo instead of double-applying
+ *  its own change. Missing/empty header is fine — the event just won't
+ *  carry an originator and every connected device (including the writer)
+ *  will treat it as fresh. */
+function readClientId(request: { headers: Record<string, unknown> }): string | undefined {
+  const raw = request.headers['x-client-id'];
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  // Cap the length so we don't store a 10MB blob as a clientId.
+  return trimmed.slice(0, 128);
+}
 
 const DB_ERROR_CODES = ['ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'ETIMEDOUT', '57P03', '08001', '08003', '08004', '08006', '08007'];
 
@@ -130,8 +147,9 @@ export async function registerV1Routes(app: FastifyInstance): Promise<void> {
 			});
 		}
 
-		if (error.statusCode) {
-			return reply.code(error.statusCode).send(error);
+		const fastifyErr = error as { statusCode?: number };
+		if (fastifyErr.statusCode) {
+			return reply.code(fastifyErr.statusCode).send(error);
 		}
 
 		request.log.error({ err: error }, 'Unhandled error');
@@ -457,16 +475,7 @@ export async function registerV1Routes(app: FastifyInstance): Promise<void> {
 
  const db = getDb();
  if (!db) {
- return reply.code(202).send({
- id: crypto.randomUUID(),
- title: parsed.title,
- author: parsed.author,
- status: 'ready',
- file_format: parsed.fileFormat,
- total_chapters: parsed.chapters.length,
- total_words: parsed.totalWords,
- warning: getDatabaseUnavailableReason()
- });
+ return reply.code(503).send(dbUnavailableReply());
  }
 
  try {
@@ -646,10 +655,16 @@ export async function registerV1Routes(app: FastifyInstance): Promise<void> {
  const db = getDb();
 
  if (!db) {
- return reply.code(204).send();
+ return reply.code(503).send(dbUnavailableReply());
  }
 
  try {
+ const audioFiles = await db
+ .select({ chapterId: chapterAudio.chapterId, voiceId: chapterAudio.voiceId })
+ .from(chapterAudio)
+ .innerJoin(chapters, eq(chapters.id, chapterAudio.chapterId))
+ .where(eq(chapters.bookId, params.bookId));
+
  const result = await db
  .delete(books)
  .where(and(eq(books.id, params.bookId), eq(books.userId, authUser.sub)))
@@ -660,6 +675,15 @@ export async function registerV1Routes(app: FastifyInstance): Promise<void> {
  error: 'NotFound',
  message: 'El libro no existe o no pertenece al usuario autenticado.'
  });
+ }
+
+ for (const af of audioFiles) {
+ try {
+ const filePath = getAudioFilePath(af.chapterId, af.voiceId);
+ await fs.promises.unlink(filePath);
+ } catch {
+ // File may not exist on disk
+ }
  }
 
  return reply.code(204).send();
@@ -790,6 +814,7 @@ export async function registerV1Routes(app: FastifyInstance): Promise<void> {
  await saveAudioFile(audioFilePath, result.audioBuffer);
  }
 
+ try {
  await db.insert(chapterAudio).values({
  chapterId: params.chapterId,
  voiceId,
@@ -798,6 +823,21 @@ export async function registerV1Routes(app: FastifyInstance): Promise<void> {
  durationMs: result.durationMs,
  wordTimestamps: result.wordTimestamps
  });
+ } catch (insertErr) {
+ const recheck = await db
+ .select({ durationMs: chapterAudio.durationMs, wordTimestamps: chapterAudio.wordTimestamps })
+ .from(chapterAudio)
+ .where(and(eq(chapterAudio.chapterId, params.chapterId), eq(chapterAudio.voiceId, voiceId), eq(chapterAudio.ttsProvider, providerName)))
+ .limit(1);
+ if (recheck[0]) {
+ return reply.send({
+ book_id: params.bookId, chapter_id: params.chapterId, provider: providerName,
+ audio_url: audioUrlPath, duration_ms: recheck[0].durationMs,
+ word_timestamps: recheck[0].wordTimestamps, source: 'cache'
+ });
+ }
+ throw insertErr;
+ }
 
  return reply.send({
  book_id: params.bookId,
@@ -817,7 +857,7 @@ export async function registerV1Routes(app: FastifyInstance): Promise<void> {
  });
 
  app.put('/api/v1/books/:bookId/progress', { preHandler: requireAccessToken }, async (request, reply) => {
- const params = request.params as { bookId: string };
+ const params = bookParamsSchema.parse(request.params);
  const body = saveProgressSchema.parse(request.body);
  const authUser = getAuthenticatedUser(request);
  const db = getDb();
@@ -844,6 +884,7 @@ export async function registerV1Routes(app: FastifyInstance): Promise<void> {
  const percentage =
  totalWords > 0 ? Math.min((body.word_index / totalWords) * 100, 100) : 0;
 
+ const lastReadAt = new Date();
  await db
  .insert(readingProgress)
  .values({
@@ -853,7 +894,7 @@ export async function registerV1Routes(app: FastifyInstance): Promise<void> {
  wordIndex: body.word_index,
  audioPositionMs: body.audio_position_ms,
  percentage,
- lastReadAt: new Date()
+ lastReadAt
  })
  .onConflictDoUpdate({
  target: [readingProgress.userId, readingProgress.bookId],
@@ -862,7 +903,25 @@ export async function registerV1Routes(app: FastifyInstance): Promise<void> {
  wordIndex: body.word_index,
  audioPositionMs: body.audio_position_ms,
  percentage,
- lastReadAt: new Date()
+ lastReadAt
+ }
+ });
+
+ // Fan out to every other device the user has connected via SSE.
+ // The originating clientId travels along so the writer's own SSE
+ // listener can drop the echo instead of double-applying its own
+ // write. lastReadAt acts as the server-authoritative timestamp the
+ // peers use for last-write-wins reconciliation if two devices race.
+ realtimeBus.publish(authUser.sub, {
+ type: 'progress.updated',
+ clientId: readClientId(request),
+ data: {
+ bookId: params.bookId,
+ chapterId: body.chapter_id,
+ wordIndex: body.word_index,
+ audioPositionMs: body.audio_position_ms,
+ percentage,
+ lastReadAt: lastReadAt.toISOString()
  }
  });
 
@@ -894,4 +953,78 @@ export async function registerV1Routes(app: FastifyInstance): Promise<void> {
 		const stream = fs.createReadStream(filePath);
 		return reply.type('audio/mpeg').send(stream);
 	});
+
+	// ─────────────────────── REALTIME SYNC (SSE) ───────────────────────
+	//
+	// Long-lived Server-Sent Events stream per authenticated user.
+	// Clients open ONE connection at login and keep it open; the server
+	// fans out pub/sub events (progress updates, bookmark mutations) so
+	// device B is notified the instant device A writes. SSE was chosen
+	// over WebSocket because the channel is strictly server→client (no
+	// client messages) and SSE traverses HTTP proxies/CDNs without
+	// special handling.
+	//
+	// Heartbeat: a comment line (": ping\n\n") is written every 25 s to
+	// keep proxies (and Node's default socket timeout) from closing an
+	// otherwise-idle connection. Comments are ignored by EventSource.
+	app.get(
+		'/api/v1/sync/stream',
+		{ preHandler: requireAccessToken },
+		async (request, reply) => {
+			const authUser = getAuthenticatedUser(request);
+
+			// Bypass Fastify's content negotiation entirely — we own the
+			// raw socket from here on so the response body can stay open.
+			reply.raw.setHeader('Content-Type', 'text/event-stream');
+			reply.raw.setHeader('Cache-Control', 'no-cache, no-transform');
+			reply.raw.setHeader('Connection', 'keep-alive');
+			// Disable proxy buffering (NGINX honours this; others ignore).
+			reply.raw.setHeader('X-Accel-Buffering', 'no');
+			reply.raw.flushHeaders();
+
+			const write = (event: RealtimeEvent) => {
+				// Guard against the small race between unsubscribe and a
+				// publish on a different tick — a write after socket
+				// close would throw and crash the listener.
+				if (reply.raw.writableEnded) return;
+				const payload = JSON.stringify(event);
+				reply.raw.write(`event: ${event.type}\n`);
+				reply.raw.write(`data: ${payload}\n\n`);
+			};
+
+			// Welcome frame so clients can detect "connected" without
+			// waiting for the first business event. The non-standard
+			// `__welcome` flag lets the client ignore it instead of
+			// applying it as a real progress update.
+			write({
+				type: 'progress.updated',
+				ts: new Date().toISOString(),
+				data: { __welcome: true, userId: authUser.sub }
+			} as RealtimeEvent);
+
+			const unsubscribe = realtimeBus.subscribe(authUser.sub, write);
+
+			const heartbeat = setInterval(() => {
+				if (reply.raw.writableEnded) return;
+				try {
+					reply.raw.write(`: ping ${Date.now()}\n\n`);
+				} catch {
+					// Socket dead → cleanup fires from the close handler.
+				}
+			}, 25_000);
+			heartbeat.unref?.();
+
+			const cleanup = () => {
+				clearInterval(heartbeat);
+				unsubscribe();
+			};
+
+			request.raw.on('close', cleanup);
+			request.raw.on('error', cleanup);
+
+			// Returning the (still-open) reply tells Fastify we've
+			// hijacked the response — it must not send anything else.
+			return reply;
+		}
+	);
 }

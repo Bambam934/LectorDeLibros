@@ -8,9 +8,16 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/network/api_client.dart';
 import '../../core/storage/secure_storage.dart';
+import '../../features/reader/data/repositories/ambient_sound_repository.dart';
+import '../../features/reader/data/repositories/bookmark_repository.dart';
+import '../../features/reader/data/repositories/chapter_cache_repository.dart';
+import '../../features/reader/data/repositories/highlight_repository.dart';
+import '../../features/reader/data/repositories/reading_stats_repository.dart';
+import '../../features/reader/data/repositories/voice_preset_repository.dart';
 import '../../features/auth/data/repositories/remote_auth_repository.dart';
 import '../../features/auth/domain/repositories/auth_repository.dart';
 import '../../features/auth/presentation/cubit/auth_cubit.dart';
+import '../../features/library/data/repositories/book_shelf_repository.dart';
 import '../../features/library/data/repositories/remote_library_repository.dart';
 import '../../features/library/domain/repositories/library_repository.dart';
 import '../../features/reader/data/repositories/audio_tts_repository.dart';
@@ -71,8 +78,20 @@ Future<void> setTtsSpeechRate(double rate) async {
   await prefs.setDouble(_kTtsSpeechRateKey, rate.clamp(0.0, 1.0));
 }
 
-const _kNativeVoiceNameKey = 'tts_native_voice_name${kIsWeb ? '_web' : '_mobile'}';
-const _kNativeVoiceLocaleKey = 'tts_native_voice_locale${kIsWeb ? '_web' : '_mobile'}';
+String get _platformVoiceSuffix {
+  if (kIsWeb) return '_web';
+  switch (defaultTargetPlatform) {
+    case TargetPlatform.windows:
+    case TargetPlatform.macOS:
+    case TargetPlatform.linux:
+      return '_desktop';
+    default:
+      return '_mobile';
+  }
+}
+
+final _kNativeVoiceNameKey = 'tts_native_voice_name$_platformVoiceSuffix';
+final _kNativeVoiceLocaleKey = 'tts_native_voice_locale$_platformVoiceSuffix';
 
 Future<Map<String, String>?> getNativeVoice() async {
   final prefs = await SharedPreferences.getInstance();
@@ -150,6 +169,38 @@ Future<void> configureDependencies() async {
     sl.registerLazySingleton<ReaderRepository>(
       () => RemoteReaderRepository(apiClient: sl()),
     );
+  }
+
+  if (!sl.isRegistered<BookmarkRepository>()) {
+    sl.registerLazySingleton<BookmarkRepository>(BookmarkRepository.new);
+  }
+
+  if (!sl.isRegistered<ReadingStatsRepository>()) {
+    sl.registerLazySingleton<ReadingStatsRepository>(ReadingStatsRepository.new);
+  }
+
+  if (!sl.isRegistered<ChapterCacheRepository>()) {
+    sl.registerLazySingleton<ChapterCacheRepository>(ChapterCacheRepository.new);
+  }
+
+  if (!sl.isRegistered<VoicePresetRepository>()) {
+    sl.registerLazySingleton<VoicePresetRepository>(VoicePresetRepository.new);
+  }
+
+  if (!sl.isRegistered<HighlightRepository>()) {
+    sl.registerLazySingleton<HighlightRepository>(HighlightRepository.new);
+  }
+
+  if (!sl.isRegistered<BookShelfRepository>()) {
+    sl.registerLazySingleton<BookShelfRepository>(BookShelfRepository.new);
+  }
+
+  if (!sl.isRegistered<AmbientSoundRepository>()) {
+    final ambient = AmbientSoundRepository();
+    sl.registerLazySingleton<AmbientSoundRepository>(() => ambient);
+    // Restore last sound preference (does not auto-start playback
+    // unless the user had it enabled when they last quit).
+    unawaited(ambient.restorePreferences());
   }
 
   if (!sl.isRegistered<AudioPlayerRepository>()) {

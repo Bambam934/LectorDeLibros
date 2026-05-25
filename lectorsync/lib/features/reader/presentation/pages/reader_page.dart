@@ -7,6 +7,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../../core/di/injection_container.dart';
 import '../../../../core/layout/breakpoints.dart';
+import '../../../../core/utils/haptics.dart';
 import '../../../settings/domain/entities/reading_preferences.dart';
 import '../../../settings/presentation/cubit/preferences_cubit.dart';
 import '../../../settings/presentation/widgets/reading_customization_sheet.dart';
@@ -15,9 +16,18 @@ import '../../data/repositories/device_tts_repository.dart';
 import '../../data/repositories/tts/tts_capabilities.dart';
 import '../../data/repositories/tts_repository_proxy.dart';
 import '../../domain/repositories/tts_repository.dart';
+import '../../data/repositories/bookmark_repository.dart';
+import '../../data/repositories/chapter_cache_repository.dart';
+import '../../data/repositories/reading_stats_repository.dart';
+import '../../domain/entities/bookmark.dart';
+import '../../domain/repositories/reader_repository.dart';
 import '../bloc/reader_bloc.dart';
 import '../bloc/reader_event.dart';
 import '../bloc/reader_state.dart';
+import '../widgets/ambient_sound_sheet.dart';
+import '../widgets/book_search_delegate.dart';
+import '../widgets/bookmarks_sheet.dart';
+import '../widgets/reading_stats_sheet.dart';
 
 class ReaderPage extends StatelessWidget {
   const ReaderPage({
@@ -41,6 +51,8 @@ class ReaderPage extends StatelessWidget {
         ttsRepository: sl(),
         audioTtsRepository:
             sl.isRegistered<AudioTtsRepository>() ? sl<AudioTtsRepository>() : null,
+        chapterCacheRepository:
+            sl.isRegistered<ChapterCacheRepository>() ? sl<ChapterCacheRepository>() : null,
       )..add(
           ReaderStarted(
             bookId,
@@ -62,7 +74,8 @@ class _ReaderView extends StatefulWidget {
   State<_ReaderView> createState() => _ReaderViewState();
 }
 
-class _ReaderViewState extends State<_ReaderView> {
+class _ReaderViewState extends State<_ReaderView>
+    with WidgetsBindingObserver {
   ScrollController? _scrollController;
   List<GlobalKey> _paragraphKeys = [];
   List<int> _wordOffsets = [];
@@ -71,12 +84,19 @@ class _ReaderViewState extends State<_ReaderView> {
   bool _immersive = false;
   bool _tocVisible = false;
   bool _isEstimatingProgress = false;
+  bool _speedBarVisible = false;
   StreamSubscription<bool>? _estimatingSub;
+
+  // Reading session tracking.
+  final Stopwatch _sessionStopwatch = Stopwatch();
+  int _sessionStartWordIndex = 0;
+  StreamSubscription<TtsPlaybackStatus>? _ttsStatusSub;
 
   late final PreferencesCubit _preferencesCubit = PreferencesCubit(repository: sl());
 
   void _toggleImmersive() => setState(() => _immersive = !_immersive);
   void _toggleToc() => setState(() => _tocVisible = !_tocVisible);
+  void _toggleSpeedBar() => setState(() => _speedBarVisible = !_speedBarVisible);
 
   void _openCustomizationSheet() {
     showModalBottomSheet<void>(
@@ -98,6 +118,81 @@ class _ReaderViewState extends State<_ReaderView> {
         child: const _VoiceMenuSheet(),
       ),
     );
+  }
+
+  /// Internal: add bookmark without showing a snackbar (called from
+  /// inside the bookmarks sheet via the "Aquí" button).
+  Bookmark? _buildCurrentBookmark() {
+    final state = context.read<ReaderBloc>().state;
+    final chapter = state.currentChapter;
+    if (chapter == null) return null;
+
+    final wordIdx = state.currentWordIndex;
+    final words = chapter.words;
+    final snippetStart = (wordIdx - 5).clamp(0, words.length);
+    final snippetEnd = (wordIdx + 5).clamp(0, words.length);
+    final snippet = words.sublist(snippetStart, snippetEnd).join(' ');
+
+    return Bookmark(
+      id: '${chapter.id}_${wordIdx}_${DateTime.now().millisecondsSinceEpoch}',
+      bookId: state.bookId,
+      chapterId: chapter.id,
+      chapterTitle: chapter.title,
+      wordIndex: wordIdx,
+      snippet: snippet,
+      createdAt: DateTime.now(),
+    );
+  }
+
+  Future<void> _addBookmarkAtCurrent() async {
+    final bookmark = _buildCurrentBookmark();
+    if (bookmark == null) return;
+    Haptics.medium();
+    await sl<BookmarkRepository>().addBookmark(bookmark);
+  }
+
+  void _openBookmarks(BuildContext context) {
+    final state = context.read<ReaderBloc>().state;
+    final hasChapter = state.currentChapter != null;
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => BookmarksSheet(
+        bookId: state.bookId,
+        canAddCurrent: hasChapter,
+        onAddCurrent: hasChapter ? _addBookmarkAtCurrent : null,
+        onNavigate: (chapterId, wordIndex) {
+          final bloc = context.read<ReaderBloc>();
+          bloc.add(ReaderChapterSelected(chapterId));
+          Future.delayed(const Duration(milliseconds: 500), () {
+            if (mounted) bloc.add(ReaderWordIndexChanged(wordIndex));
+          });
+        },
+      ),
+    );
+  }
+
+  Future<void> _openSearch(BuildContext context) async {
+    final bloc = context.read<ReaderBloc>();
+    final state = bloc.state;
+    final result = await showSearch<SearchResult?>(
+      context: context,
+      delegate: BookSearchDelegate(
+        chapters: state.chapters,
+        readerRepository: sl<ReaderRepository>(),
+        bookId: state.bookId,
+        currentChapter: state.currentChapter,
+      ),
+    );
+    if (result != null && mounted) {
+      // Navigate to the found chapter and word.
+      bloc.add(ReaderChapterSelected(result.chapterId));
+      // Delay to let chapter load, then jump to word.
+      await Future.delayed(const Duration(milliseconds: 500));
+      if (mounted) {
+        bloc.add(ReaderWordIndexChanged(result.wordIndex));
+      }
+    }
   }
 
   int _findParagraphIndex(int wordIndex, List<int> wordOffsets) {
@@ -149,8 +244,168 @@ class _ReaderViewState extends State<_ReaderView> {
     });
   }
 
+  void _listenTtsStatus() {
+    _ttsStatusSub?.cancel();
+    final bloc = context.read<ReaderBloc>();
+    _ttsStatusSub = sl<DeviceTtsRepository>().statusStream.listen((status) {
+      if (status == TtsPlaybackStatus.playing) {
+        if (!_sessionStopwatch.isRunning) {
+          _sessionStopwatch.start();
+          _sessionStartWordIndex = bloc.state.currentWordIndex;
+        }
+      } else if (status == TtsPlaybackStatus.idle ||
+          status == TtsPlaybackStatus.completed ||
+          status == TtsPlaybackStatus.error) {
+        if (_sessionStopwatch.isRunning) {
+          _sessionStopwatch.stop();
+          final elapsed = _sessionStopwatch.elapsed;
+          final currentWord = bloc.state.currentWordIndex;
+          final wordsRead = (currentWord - _sessionStartWordIndex).abs();
+          if (elapsed.inSeconds > 5 && wordsRead > 0) {
+            sl<ReadingStatsRepository>().recordSession(
+              bookId: bloc.state.bookId,
+              duration: elapsed,
+              wordsRead: wordsRead,
+            );
+          }
+          _sessionStopwatch.reset();
+        }
+      }
+    });
+  }
+
+  void _openStats() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => const ReadingStatsSheet(),
+    );
+  }
+
+  void _openAmbient() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => const AmbientSoundSheet(),
+    );
+  }
+
+  /// "Sync now" does TWO things, both critical to the user's mental
+  /// model of "make everything aligned":
+  ///   1. Save the current position to the backend (multi-device sync).
+  ///   2. If TTS is currently speaking, dispatch a `ReaderTtsRestart`
+  ///      so the engine and the text-follower tracker re-align at the
+  ///      current word. This is essential because the tracker is a
+  ///      timer-based estimate on desktop/web that drifts away from
+  ///      the actual voice over time — and just saving progress
+  ///      doesn't fix that drift. The user complained "sync button
+  ///      doesn't fix the desync" precisely because we were missing
+  ///      this step.
+  void _syncNow() {
+    final bloc = context.read<ReaderBloc>();
+    final messenger = ScaffoldMessenger.of(context);
+    if (bloc.state.currentChapter == null) {
+      messenger.showSnackBar(const SnackBar(
+        content: Text('Sin capítulo activo para sincronizar'),
+        duration: Duration(seconds: 2),
+      ));
+      return;
+    }
+    Haptics.light();
+    bloc.add(const ReaderProgressSaved());
+    final wasActive = bloc.state.isTtsActive;
+    if (wasActive) {
+      // Force a clean stop→speak cycle at the current word so the
+      // engine and the tracker start from the same position.
+      bloc.add(const ReaderTtsRestart());
+    }
+    messenger.showSnackBar(SnackBar(
+      content: Row(
+        children: [
+          const Icon(Icons.cloud_done_rounded,
+              size: 20, color: Colors.white),
+          const SizedBox(width: 8),
+          Text(wasActive
+              ? 'Realineando voz y guardando…'
+              : 'Sincronizando posición…'),
+        ],
+      ),
+      duration: const Duration(seconds: 2),
+    ));
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    // FIX (session 11 regression): we ONLY auto-pause on `paused` —
+    // never `inactive` and never `hidden`.
+    //
+    // `inactive` fires too aggressively:
+    //   - iOS: TouchID/FaceID prompt, Control Center, app switcher peek
+    //   - Android: split-screen focus loss, picture-in-picture, system
+    //     dialogs (including OUR own modal sheets in some Android
+    //     versions), volume slider overlay
+    //   - Web: tab/window momentary focus loss (clicking dev tools,
+    //     URL bar, even some animated transitions)
+    //
+    // The previous handler treated `inactive` the same as `paused` and
+    // dispatched `ReaderTtsToggled`, which IMMEDIATELY stopped TTS the
+    // moment the user pressed play (because pressing the button briefly
+    // shifted focus → `inactive` fired → handler stopped TTS before any
+    // audio was generated). Symptom: "TTS makes no sound on web /
+    // Android" reported by the user.
+    //
+    // `paused` is the only state that reliably means "app is fully in
+    // the background", which is when we genuinely want to stop the
+    // voice and save progress.
+    // Split the two side-effects by their tolerance for false positives:
+    //   - Saving progress is idempotent and harmless, so it can fire on
+    //     the broader `paused | hidden` set (covers backgrounding on
+    //     mobile, tab-hide on web).
+    //   - Auto-pausing TTS is destructive (kills the playing voice), so
+    //     we only do it on the strict `paused` state.
+    final shouldSave = state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden;
+    final shouldStopTts = state == AppLifecycleState.paused;
+
+    if (!shouldSave) return;
+    if (!mounted) return;
+
+    try {
+      final bloc = context.read<ReaderBloc>();
+      bloc.add(const ReaderProgressSaved());
+      if (shouldStopTts && bloc.state.isTtsActive) {
+        bloc.add(const ReaderTtsToggled());
+      }
+    } catch (_) {
+      // Bloc may already be gone if navigation is in flight.
+    }
+  }
+
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    // Save any ongoing reading session before dispose.
+    if (_sessionStopwatch.isRunning) {
+      _sessionStopwatch.stop();
+      final wordsRead = (context.read<ReaderBloc>().state.currentWordIndex -
+              _sessionStartWordIndex)
+          .abs();
+      if (_sessionStopwatch.elapsed.inSeconds > 5 && wordsRead > 0) {
+        sl<ReadingStatsRepository>().recordSession(
+          bookId: context.read<ReaderBloc>().state.bookId,
+          duration: _sessionStopwatch.elapsed,
+          wordsRead: wordsRead,
+        );
+      }
+    }
+    _ttsStatusSub?.cancel();
     _estimatingSub?.cancel();
     _preferencesCubit.close();
     _scrollController?.dispose();
@@ -161,6 +416,7 @@ class _ReaderViewState extends State<_ReaderView> {
   Widget build(BuildContext context) {
     _estimatingSub ??= (() {
       _listenEstimating();
+      _listenTtsStatus();
       return _estimatingSub;
     })();
     return BlocProvider.value(
@@ -190,6 +446,26 @@ class _ReaderViewState extends State<_ReaderView> {
         LogicalKeySet(LogicalKeyboardKey.arrowLeft): const _PrevChapterIntent(),
         LogicalKeySet(LogicalKeyboardKey.arrowRight): const _NextChapterIntent(),
         LogicalKeySet(LogicalKeyboardKey.keyT): const _ToggleTocIntent(),
+        // Desktop-friendly shortcuts. Ctrl on Win/Linux, Cmd on macOS;
+        // Flutter's LogicalKeyboardKey.control matches either modifier
+        // when used as `meta` is not required — but for cross-platform
+        // we bind both `control` AND `meta` variants below.
+        LogicalKeySet(LogicalKeyboardKey.control, LogicalKeyboardKey.keyB):
+            const _OpenBookmarksIntent(),
+        LogicalKeySet(LogicalKeyboardKey.meta, LogicalKeyboardKey.keyB):
+            const _OpenBookmarksIntent(),
+        LogicalKeySet(LogicalKeyboardKey.control, LogicalKeyboardKey.keyS):
+            const _SyncNowIntent(),
+        LogicalKeySet(LogicalKeyboardKey.meta, LogicalKeyboardKey.keyS):
+            const _SyncNowIntent(),
+        LogicalKeySet(LogicalKeyboardKey.control, LogicalKeyboardKey.keyF):
+            const _OpenSearchIntent(),
+        LogicalKeySet(LogicalKeyboardKey.meta, LogicalKeyboardKey.keyF):
+            const _OpenSearchIntent(),
+        LogicalKeySet(LogicalKeyboardKey.control, LogicalKeyboardKey.comma):
+            const _OpenCustomizationIntent(),
+        LogicalKeySet(LogicalKeyboardKey.meta, LogicalKeyboardKey.comma):
+            const _OpenCustomizationIntent(),
       },
       child: Actions(
         actions: <Type, Action>{
@@ -201,6 +477,10 @@ class _ReaderViewState extends State<_ReaderView> {
           _PrevChapterIntent: _CallbackAction(() => _navigateChapter(context, -1)),
           _NextChapterIntent: _CallbackAction(() => _navigateChapter(context, 1)),
           _ToggleTocIntent: _CallbackAction(_toggleToc),
+          _OpenBookmarksIntent: _CallbackAction(() => _openBookmarks(context)),
+          _SyncNowIntent: _CallbackAction(_syncNow),
+          _OpenSearchIntent: _CallbackAction(() => _openSearch(context)),
+          _OpenCustomizationIntent: _CallbackAction(_openCustomizationSheet),
         },
         child: Scaffold(
           backgroundColor: colors.background,
@@ -216,55 +496,7 @@ class _ReaderViewState extends State<_ReaderView> {
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(color: colors.foreground),
                   ),
-                  actions: [
-                    if (bp.isExpanded)
-                      IconButton(
-                        onPressed: _toggleToc,
-                        icon: Icon(_tocVisible
-                            ? Icons.menu_book_rounded
-                            : Icons.menu_book_outlined),
-                        tooltip: 'Índice',
-                      ),
-                    if (bp.isMedium)
-                      IconButton(
-                        onPressed: _toggleToc,
-                        icon: const Icon(Icons.list_rounded),
-                        tooltip: 'Índice',
-                      ),
-                    IconButton(
-                      onPressed: _openVoiceMenu,
-                      icon: const Icon(Icons.record_voice_over_rounded),
-                      tooltip: 'Voz',
-                    ),
-                    IconButton(
-                      onPressed: _openCustomizationSheet,
-                      icon: const Icon(Icons.tune_rounded),
-                      tooltip: 'Personalizar',
-                    ),
-                    BlocBuilder<ReaderBloc, ReaderState>(
-                      buildWhen: (prev, curr) =>
-                          prev.ttsStatus != curr.ttsStatus ||
-                          prev.currentChapter?.id != curr.currentChapter?.id,
-                      builder: (context, state) {
-                        final hasText = state.currentChapter?.words.isNotEmpty ?? false;
-                        return IconButton(
-                          onPressed: hasText
-                              ? () =>
-                                  context.read<ReaderBloc>().add(const ReaderTtsToggled())
-                              : null,
-                          icon: Icon(
-                            state.isTtsActive
-                                ? Icons.stop_circle_rounded
-                                : Icons.play_circle_rounded,
-                            size: 28,
-                            color: colors.accent,
-                          ),
-                          tooltip: state.isTtsActive ? 'Detener audio' : 'Escuchar',
-                        );
-                      },
-                    ),
-                    const SizedBox(width: 4),
-                  ],
+                  actions: _buildAppBarActions(context, bp, colors),
                 ),
           drawer: bp.isCompact
               ? Drawer(
@@ -273,40 +505,40 @@ class _ReaderViewState extends State<_ReaderView> {
                   ),
                 )
               : null,
-      body: BlocListener<ReaderBloc, ReaderState>(
-        listenWhen: (prev, curr) {
-          if (prev.currentChapter?.id != curr.currentChapter?.id &&
-              curr.currentChapter != null) {
-            return true;
-          }
-          if (curr.isTtsActive &&
-              prev.currentWordIndex != curr.currentWordIndex) {
-            final prevPara =
-                _findParagraphIndex(prev.currentWordIndex, _wordOffsets);
-            final currPara =
-                _findParagraphIndex(curr.currentWordIndex, _wordOffsets);
-            if (currPara != prevPara) return true;
-          }
-          return false;
-        },
-        listener: (context, state) {
-          final chapter = state.currentChapter;
-          if (chapter == null) return;
+          body: BlocListener<ReaderBloc, ReaderState>(
+            listenWhen: (prev, curr) {
+              if (prev.currentChapter?.id != curr.currentChapter?.id &&
+                  curr.currentChapter != null) {
+                return true;
+              }
+              if (curr.isTtsActive &&
+                  prev.currentWordIndex != curr.currentWordIndex) {
+                final prevPara =
+                    _findParagraphIndex(prev.currentWordIndex, _wordOffsets);
+                final currPara =
+                    _findParagraphIndex(curr.currentWordIndex, _wordOffsets);
+                if (currPara != prevPara) return true;
+              }
+              return false;
+            },
+            listener: (context, state) {
+              final chapter = state.currentChapter;
+              if (chapter == null) return;
 
-          if (chapter.id != _lastChapterId) {
-            _lastChapterId = chapter.id;
-            _lastScrolledParagraphIndex = -1;
-            final oldCtrl = _scrollController;
-            setState(() {
-              _scrollController = ScrollController();
-            });
-            oldCtrl?.dispose();
-            return;
-          }
+              if (chapter.id != _lastChapterId) {
+                _lastChapterId = chapter.id;
+                _lastScrolledParagraphIndex = -1;
+                final oldCtrl = _scrollController;
+                setState(() {
+                  _scrollController = ScrollController();
+                });
+                oldCtrl?.dispose();
+                return;
+              }
 
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) _scrollToParagraph(state.currentWordIndex);
-          });
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) _scrollToParagraph(state.currentWordIndex);
+              });
             },
             child: BlocConsumer<ReaderBloc, ReaderState>(
               listenWhen: (prev, curr) =>
@@ -360,10 +592,239 @@ class _ReaderViewState extends State<_ReaderView> {
     );
   }
 
+  /// Build the AppBar actions. Primary actions stay visible; secondary
+  /// actions collapse into an overflow menu on compact screens to
+  /// reduce clutter.
+  List<Widget> _buildAppBarActions(
+    BuildContext context,
+    LayoutBreakpoint bp,
+    ReadingPaletteColors colors,
+  ) {
+    final compact = bp.isCompact;
+
+    final bookmarkBtn = _BookmarkCountBadge(
+      accent: colors.accent,
+      onTap: () => _openBookmarks(context),
+    );
+
+    final speedBtn = BlocBuilder<ReaderBloc, ReaderState>(
+      buildWhen: (prev, curr) => prev.isTtsActive != curr.isTtsActive,
+      builder: (context, s) {
+        if (!s.isTtsActive) return const SizedBox.shrink();
+        return IconButton(
+          onPressed: _toggleSpeedBar,
+          tooltip: _speedBarVisible
+              ? 'Ocultar velocidad'
+              : 'Velocidad de lectura',
+          icon: Icon(
+            _speedBarVisible
+                ? Icons.speed_rounded
+                : Icons.speed_outlined,
+            color: _speedBarVisible ? colors.accent : null,
+          ),
+        );
+      },
+    );
+
+    final ttsBtn = BlocBuilder<ReaderBloc, ReaderState>(
+      buildWhen: (prev, curr) =>
+          prev.ttsStatus != curr.ttsStatus ||
+          prev.currentChapter?.id != curr.currentChapter?.id,
+      builder: (context, state) {
+        final hasText = state.currentChapter?.words.isNotEmpty ?? false;
+        return IconButton(
+          onPressed: hasText
+              ? () {
+                  Haptics.medium();
+                  context.read<ReaderBloc>().add(const ReaderTtsToggled());
+                }
+              : null,
+          icon: Icon(
+            state.isTtsActive
+                ? Icons.stop_circle_rounded
+                : Icons.play_circle_rounded,
+            size: 28,
+            color: colors.accent,
+          ),
+          tooltip: state.isTtsActive ? 'Detener audio' : 'Escuchar',
+        );
+      },
+    );
+
+    // Layout strategy:
+    //   Compact (phones): TOC + bookmark + speed + voice + overflow + TTS
+    //   Medium/Expanded: full row visible
+    final tocBtn = bp.isExpanded
+        ? IconButton(
+            onPressed: _toggleToc,
+            icon: Icon(_tocVisible
+                ? Icons.menu_book_rounded
+                : Icons.menu_book_outlined),
+            tooltip: 'Índice',
+          )
+        : (bp.isMedium
+            ? IconButton(
+                onPressed: _toggleToc,
+                icon: const Icon(Icons.list_rounded),
+                tooltip: 'Índice',
+              )
+            : const SizedBox.shrink());
+
+    // Cross-platform shortcut hint suffix for desktop / web. Empty
+    // string on mobile to avoid clutter — touch users don't have
+    // keyboard shortcuts. Include kIsWeb because desktop browsers
+    // accept the same shortcuts via the Shortcuts widget above.
+    final platform = defaultTargetPlatform;
+    final isKeyboardLikely = kIsWeb ||
+        platform == TargetPlatform.windows ||
+        platform == TargetPlatform.macOS ||
+        platform == TargetPlatform.linux;
+    String hint(String shortcut) =>
+        isKeyboardLikely ? '  ($shortcut)' : '';
+
+    final searchBtn = IconButton(
+      onPressed: () => _openSearch(context),
+      icon: const Icon(Icons.search_rounded),
+      tooltip: 'Buscar en el libro${hint('Ctrl+F')}',
+    );
+
+    final voiceBtn = IconButton(
+      onPressed: _openVoiceMenu,
+      icon: const Icon(Icons.record_voice_over_rounded),
+      tooltip: 'Voz',
+    );
+
+    final statsBtn = IconButton(
+      onPressed: _openStats,
+      icon: const Icon(Icons.bar_chart_rounded),
+      tooltip: 'Estadísticas',
+    );
+
+    final customizeBtn = IconButton(
+      onPressed: _openCustomizationSheet,
+      icon: const Icon(Icons.tune_rounded),
+      tooltip: 'Personalizar${hint('Ctrl+,')}',
+    );
+
+    final ambientBtn = IconButton(
+      onPressed: _openAmbient,
+      icon: const Icon(Icons.graphic_eq_rounded),
+      tooltip: 'Sonido ambiental',
+    );
+
+    final syncBtn = IconButton(
+      onPressed: _syncNow,
+      icon: const Icon(Icons.sync_rounded),
+      tooltip: 'Sincronizar ahora${hint('Ctrl+S')}',
+    );
+
+    if (compact) {
+      // Compact: only essentials visible, rest in overflow menu.
+      return [
+        bookmarkBtn,
+        speedBtn,
+        PopupMenuButton<String>(
+          tooltip: 'Más opciones',
+          icon: const Icon(Icons.more_vert_rounded),
+          onSelected: (action) {
+            switch (action) {
+              case 'search':
+                _openSearch(context);
+                break;
+              case 'voice':
+                _openVoiceMenu();
+                break;
+              case 'ambient':
+                _openAmbient();
+                break;
+              case 'sync':
+                _syncNow();
+                break;
+              case 'stats':
+                _openStats();
+                break;
+              case 'customize':
+                _openCustomizationSheet();
+                break;
+            }
+          },
+          itemBuilder: (_) => const [
+            PopupMenuItem(
+              value: 'search',
+              child: ListTile(
+                leading: Icon(Icons.search_rounded),
+                title: Text('Buscar'),
+                contentPadding: EdgeInsets.zero,
+              ),
+            ),
+            PopupMenuItem(
+              value: 'voice',
+              child: ListTile(
+                leading: Icon(Icons.record_voice_over_rounded),
+                title: Text('Voz'),
+                contentPadding: EdgeInsets.zero,
+              ),
+            ),
+            PopupMenuItem(
+              value: 'ambient',
+              child: ListTile(
+                leading: Icon(Icons.graphic_eq_rounded),
+                title: Text('Sonido ambiental'),
+                contentPadding: EdgeInsets.zero,
+              ),
+            ),
+            PopupMenuItem(
+              value: 'sync',
+              child: ListTile(
+                leading: Icon(Icons.sync_rounded),
+                title: Text('Sincronizar'),
+                contentPadding: EdgeInsets.zero,
+              ),
+            ),
+            PopupMenuItem(
+              value: 'stats',
+              child: ListTile(
+                leading: Icon(Icons.bar_chart_rounded),
+                title: Text('Estadísticas'),
+                contentPadding: EdgeInsets.zero,
+              ),
+            ),
+            PopupMenuItem(
+              value: 'customize',
+              child: ListTile(
+                leading: Icon(Icons.tune_rounded),
+                title: Text('Personalizar'),
+                contentPadding: EdgeInsets.zero,
+              ),
+            ),
+          ],
+        ),
+        ttsBtn,
+        const SizedBox(width: 4),
+      ];
+    }
+
+    // Medium / Expanded: show full row.
+    return [
+      tocBtn,
+      searchBtn,
+      bookmarkBtn,
+      speedBtn,
+      voiceBtn,
+      ambientBtn,
+      syncBtn,
+      statsBtn,
+      customizeBtn,
+      ttsBtn,
+      const SizedBox(width: 4),
+    ];
+  }
+
   void _navigateChapter(BuildContext context, int direction) {
     final state = context.read<ReaderBloc>().state;
     final newIndex = state.currentChapterIndex + direction;
     if (newIndex < 0 || newIndex >= state.chapters.length) return;
+    Haptics.light();
     final target = state.chapters[newIndex];
     context.read<ReaderBloc>().add(ReaderChapterSelected(target.id));
   }
@@ -385,6 +846,8 @@ class _ReaderViewState extends State<_ReaderView> {
       onParagraphKeys: (keys) => _paragraphKeys = keys,
       onWordOffsets: _updateWordOffsets,
       onNavigateChapter: (dir) => _navigateChapter(context, dir),
+      speedBarVisible: _speedBarVisible,
+      onToggleSpeedBar: _toggleSpeedBar,
       isEstimatingProgress: _isEstimatingProgress,
     );
   }
@@ -421,6 +884,8 @@ class _ReaderViewState extends State<_ReaderView> {
         onParagraphKeys: (keys) => _paragraphKeys = keys,
         onWordOffsets: _updateWordOffsets,
         onNavigateChapter: (dir) => _navigateChapter(context, dir),
+        speedBarVisible: _speedBarVisible,
+        onToggleSpeedBar: _toggleSpeedBar,
         isEstimatingProgress: _isEstimatingProgress,
       ),
     ),
@@ -461,6 +926,8 @@ Widget _buildExpandedBody(
         onParagraphKeys: (keys) => _paragraphKeys = keys,
         onWordOffsets: _updateWordOffsets,
         onNavigateChapter: (dir) => _navigateChapter(context, dir),
+        speedBarVisible: _speedBarVisible,
+        onToggleSpeedBar: _toggleSpeedBar,
         isEstimatingProgress: _isEstimatingProgress,
       ),
     ),
@@ -572,6 +1039,8 @@ class _ReaderBody extends StatefulWidget {
     required this.onParagraphKeys,
     required this.onWordOffsets,
     required this.onNavigateChapter,
+    required this.speedBarVisible,
+    required this.onToggleSpeedBar,
     this.isEstimatingProgress = false,
   });
 
@@ -585,6 +1054,8 @@ class _ReaderBody extends StatefulWidget {
   final void Function(List<GlobalKey>) onParagraphKeys;
   final void Function(List<int>) onWordOffsets;
   final void Function(int) onNavigateChapter;
+  final bool speedBarVisible;
+  final VoidCallback onToggleSpeedBar;
   final bool isEstimatingProgress;
 
   @override
@@ -659,6 +1130,20 @@ class _ReaderBodyState extends State<_ReaderBody> {
 
     return GestureDetector(
       onTap: widget.onToggleImmersive,
+      // Horizontal swipe → previous / next chapter (mobile gesture).
+      // Threshold of 600 px/s avoids accidental triggers from slow scrolls
+      // or from the slider/text-selection drag handles.
+      onHorizontalDragEnd: (details) {
+        final velocity = details.primaryVelocity ?? 0;
+        if (velocity.abs() < 600) return;
+        if (velocity > 0) {
+          // Swipe right → previous chapter.
+          widget.onNavigateChapter(-1);
+        } else {
+          // Swipe left → next chapter.
+          widget.onNavigateChapter(1);
+        }
+      },
       behavior: HitTestBehavior.opaque,
       child: Column(
         children: [
@@ -695,10 +1180,28 @@ class _ReaderBodyState extends State<_ReaderBody> {
               isEstimatingProgress: widget.isEstimatingProgress,
               foreground: colors.foreground,
               accent: colors.accent,
-              onChanged: (v) => context
+              // Commit only when the user releases the thumb. Routing
+              // ReaderWordIndexChanged through onChangeEnd instead of
+              // onChanged is what stops the Material Slider's per-rebuild
+              // ghost ticks (~once per tracker emission on Web/Desktop)
+              // from cascading into a stop()/restart of TTS.
+              onChangeEnd: (v) => context
                   .read<ReaderBloc>()
                   .add(ReaderWordIndexChanged(v.round())),
             ),
+            ),
+          // ── Speed control bar (only when user toggles it on) ──
+          if (!widget.immersive)
+            AnimatedSize(
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeInOut,
+              child: widget.speedBarVisible
+                  ? _InlineSpeedBar(
+                      accent: colors.accent,
+                      foreground: colors.foreground,
+                      onClose: widget.onToggleSpeedBar,
+                    )
+                  : const SizedBox.shrink(),
             ),
           Expanded(
             child: Builder(builder: (context) {
@@ -886,14 +1389,14 @@ class _EditorialChapterHeader extends StatelessWidget {
   }
 }
 
-class _PositionSlider extends StatelessWidget {
+class _PositionSlider extends StatefulWidget {
   const _PositionSlider({
     required this.currentWord,
     required this.maxWords,
     required this.ttsStatus,
     required this.foreground,
     required this.accent,
-    required this.onChanged,
+    required this.onChangeEnd,
     this.isEstimatingProgress = false,
   });
 
@@ -902,33 +1405,77 @@ class _PositionSlider extends StatelessWidget {
   final TtsPlaybackStatus ttsStatus;
   final Color foreground;
   final Color accent;
-  final ValueChanged<double> onChanged;
+  final ValueChanged<double> onChangeEnd;
   final bool isEstimatingProgress;
 
   @override
+  State<_PositionSlider> createState() => _PositionSliderState();
+}
+
+class _PositionSliderState extends State<_PositionSlider> {
+  // Local drag state. While the user is actively dragging the thumb we
+  // ignore external updates of `currentWord` (which the TTS tracker emits
+  // multiple times per second). The slider value stays under the user's
+  // finger, and we only push the final position back to the bloc on
+  // onChangeEnd. This is the same pattern used by _InlineSpeedBar and is
+  // what eliminates the "ghost tick" cascade observed on Web/Desktop —
+  // where rebuilding the Slider on every tracker emission used to fire
+  // spurious onChanged events that stopped TTS playback.
+  bool _isDragging = false;
+  double _dragValue = 0;
+
+  double get _effectiveValue {
+    final maxD = widget.maxWords.toDouble();
+    if (_isDragging) return _dragValue.clamp(0, maxD);
+    return widget.currentWord.toDouble().clamp(0, maxD);
+  }
+
+  void _onChangeStart(double value) {
+    setState(() {
+      _isDragging = true;
+      _dragValue = value;
+    });
+  }
+
+  void _onChanged(double value) {
+    if (!_isDragging) return;
+    setState(() => _dragValue = value);
+  }
+
+  void _onChangeEnd(double value) {
+    setState(() {
+      _isDragging = false;
+      _dragValue = value;
+    });
+    widget.onChangeEnd(value);
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final indicator = switch (ttsStatus) {
+    final indicator = switch (widget.ttsStatus) {
       TtsPlaybackStatus.loading => const SizedBox(
           width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
       TtsPlaybackStatus.playing =>
-        Icon(Icons.graphic_eq_rounded, size: 16, color: accent),
+        Icon(Icons.graphic_eq_rounded, size: 16, color: widget.accent),
       TtsPlaybackStatus.error =>
         const Icon(Icons.volume_off_rounded, size: 16, color: Colors.red),
       _ => const SizedBox.shrink(),
     };
 
-    final estimateBadge = isEstimatingProgress &&
-            (ttsStatus == TtsPlaybackStatus.playing ||
-                ttsStatus == TtsPlaybackStatus.loading)
+    final estimateBadge = widget.isEstimatingProgress &&
+            (widget.ttsStatus == TtsPlaybackStatus.playing ||
+                widget.ttsStatus == TtsPlaybackStatus.loading)
         ? Tooltip(
             message: 'Sincronización aproximada',
             child: Icon(
               Icons.bolt_rounded,
               size: 14,
-              color: foreground.withValues(alpha: 0.5),
+              color: widget.foreground.withValues(alpha: 0.5),
             ),
           )
         : const SizedBox.shrink();
+
+    final displayedWord = _effectiveValue.round();
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -938,9 +1485,9 @@ class _PositionSlider extends StatelessWidget {
           Row(
             children: [
               Text(
-                '$currentWord / $maxWords palabras',
+                '$displayedWord / ${widget.maxWords} palabras',
                 style: TextStyle(
-                  color: foreground.withValues(alpha: 0.7),
+                  color: widget.foreground.withValues(alpha: 0.7),
                   fontSize: 12,
                   fontFeatures: const [FontFeature.tabularFigures()],
                 ),
@@ -949,24 +1496,27 @@ class _PositionSlider extends StatelessWidget {
               estimateBadge,
               const SizedBox(width: 4),
               indicator,
-              _ReadingTimer(color: foreground.withValues(alpha: 0.7)),
+              _ReadingTimer(color: widget.foreground.withValues(alpha: 0.7)),
             ],
           ),
           Semantics(
-            label: 'Posición de lectura: $currentWord de $maxWords palabras',
+            label: 'Posición de lectura: $displayedWord de '
+                '${widget.maxWords} palabras',
             child: SliderTheme(
               data: SliderThemeData(
-                activeTrackColor: accent,
-                inactiveTrackColor: foreground.withValues(alpha: 0.15),
-                thumbColor: accent,
-                overlayColor: accent.withValues(alpha: 0.1),
+                activeTrackColor: widget.accent,
+                inactiveTrackColor: widget.foreground.withValues(alpha: 0.15),
+                thumbColor: widget.accent,
+                overlayColor: widget.accent.withValues(alpha: 0.1),
                 trackHeight: 3,
               ),
               child: Slider(
-                value: currentWord.toDouble().clamp(0, maxWords.toDouble()),
+                value: _effectiveValue,
                 min: 0,
-                max: maxWords.toDouble(),
-                onChanged: onChanged,
+                max: widget.maxWords.toDouble(),
+                onChangeStart: _onChangeStart,
+                onChanged: _onChanged,
+                onChangeEnd: _onChangeEnd,
               ),
             ),
           ),
@@ -1039,6 +1589,7 @@ class _ParagraphHighlightProxyState extends State<_ParagraphHighlightProxy> {
   static final _wsRegex = RegExp(r'\s+');
 
   late List<_Sentence> _sentences;
+  late List<GlobalKey> _sentenceKeys;
 
   @override
   void initState() {
@@ -1070,6 +1621,7 @@ class _ParagraphHighlightProxyState extends State<_ParagraphHighlightProxy> {
       ));
       wordCursor += wordCount;
     }
+    _sentenceKeys = List.generate(sentences.length, (_) => GlobalKey());
     return sentences;
   }
 
@@ -1106,7 +1658,28 @@ class _ParagraphHighlightProxyState extends State<_ParagraphHighlightProxy> {
     }
 
     return RepaintBoundary(
-      child: BlocBuilder<ReaderBloc, ReaderState>(
+      child: BlocConsumer<ReaderBloc, ReaderState>(
+        listenWhen: (prev, curr) {
+          if (!curr.isTtsActive) return false;
+          final prevIdx = _activeSentenceIndex(prev.currentWordIndex);
+          final currIdx = _activeSentenceIndex(curr.currentWordIndex);
+          return currIdx >= 0 && currIdx != prevIdx;
+        },
+        listener: (context, state) {
+          final idx = _activeSentenceIndex(state.currentWordIndex);
+          if (idx < 0 || idx >= _sentenceKeys.length) return;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!context.mounted) return;
+            final keyCtx = _sentenceKeys[idx].currentContext;
+            if (keyCtx == null) return;
+            Scrollable.ensureVisible(
+              keyCtx,
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOutCubic,
+              alignment: 0.3,
+            );
+          });
+        },
         buildWhen: (prev, curr) {
           final wasActive = prev.isTtsActive;
           final isActive = curr.isTtsActive;
@@ -1131,6 +1704,7 @@ class _ParagraphHighlightProxyState extends State<_ParagraphHighlightProxy> {
               children: [
                 for (var i = 0; i < _sentences.length; i++)
                   AnimatedContainer(
+                    key: _sentenceKeys[i],
                     duration: const Duration(milliseconds: 200),
                     curve: Curves.easeInOut,
                     padding: const EdgeInsets.symmetric(
@@ -1247,6 +1821,22 @@ class _NextChapterIntent extends Intent {
   const _NextChapterIntent();
 }
 
+class _OpenBookmarksIntent extends Intent {
+  const _OpenBookmarksIntent();
+}
+
+class _SyncNowIntent extends Intent {
+  const _SyncNowIntent();
+}
+
+class _OpenSearchIntent extends Intent {
+  const _OpenSearchIntent();
+}
+
+class _OpenCustomizationIntent extends Intent {
+  const _OpenCustomizationIntent();
+}
+
 class _ToggleTocIntent extends Intent {
   const _ToggleTocIntent();
 }
@@ -1276,8 +1866,16 @@ class _VoiceMenuSheetState extends State<_VoiceMenuSheet> {
   Map<String, String>? _selectedNative;
   bool _loading = true;
   TtsMode _mode = TtsMode.device;
-  String _externalVoiceId = '21m00Tcm4TlvDq8ikWAW';
-  TtsCapabilities _caps = kIsWeb ? TtsCapabilities.web : TtsCapabilities.mobile;
+  TtsCapabilities _caps = kIsWeb
+      ? TtsCapabilities.web
+      : _isDesktopPlatform
+          ? TtsCapabilities.desktop
+          : TtsCapabilities.mobile;
+
+  static bool get _isDesktopPlatform =>
+      defaultTargetPlatform == TargetPlatform.windows ||
+      defaultTargetPlatform == TargetPlatform.macOS ||
+      defaultTargetPlatform == TargetPlatform.linux;
 
   @override
   void initState() {
@@ -1287,22 +1885,23 @@ class _VoiceMenuSheetState extends State<_VoiceMenuSheet> {
 
   Future<void> _load() async {
     final mode = await getTtsMode();
-    final externalId = await getSelectedVoiceId();
     final selected = await getNativeVoice();
     final all = _caps.supportsVoiceSelection
         ? await sl<DeviceTtsRepository>().getAvailableVoices()
         : const <Map<String, String>>[];
-    // Prefer es-* and en-* voices, sorted by locale.
     final filtered = all.where((v) {
       final loc = (v['locale'] ?? '').toLowerCase();
       return loc.startsWith('es') || loc.startsWith('en');
     }).toList()
-      ..sort((a, b) =>
-          (a['locale'] ?? '').compareTo(b['locale'] ?? ''));
+      ..sort((a, b) {
+        final aNeural = _isNeuralVoice(a) ? 0 : 1;
+        final bNeural = _isNeuralVoice(b) ? 0 : 1;
+        if (aNeural != bNeural) return aNeural.compareTo(bNeural);
+        return (a['locale'] ?? '').compareTo(b['locale'] ?? '');
+      });
     if (!mounted) return;
     setState(() {
       _mode = mode;
-      _externalVoiceId = externalId;
       _selectedNative = selected ?? sl<DeviceTtsRepository>().selectedVoice;
       _nativeVoices = filtered.isEmpty ? all : filtered;
       _loading = false;
@@ -1321,19 +1920,6 @@ class _VoiceMenuSheetState extends State<_VoiceMenuSheet> {
     await sl<DeviceTtsRepository>().setVoice(voice);
     if (sl.isRegistered<TtsRepositoryProxy>()) {
       await sl<TtsRepositoryProxy>().switchMode(TtsMode.device);
-    }
-    if (wasActive) bloc.add(const ReaderTtsRestart());
-  }
-
-  Future<void> _selectExternal(_Voice voice) async {
-    final bloc = context.read<ReaderBloc>();
-    final wasActive = bloc.state.isTtsActive;
-    Navigator.pop(context);
-    await setTtsMode(TtsMode.external);
-    await setSelectedVoiceId(voice.id);
-    if (sl.isRegistered<TtsRepositoryProxy>()) {
-      await sl<TtsRepositoryProxy>()
-          .switchMode(TtsMode.external, voiceId: voice.id);
     }
     if (wasActive) bloc.add(const ReaderTtsRestart());
   }
@@ -1424,7 +2010,9 @@ class _VoiceMenuSheetState extends State<_VoiceMenuSheet> {
                 leading: Icon(
                   _isNeuralVoice(v)
                       ? Icons.auto_awesome_rounded
-                      : Icons.phone_android_rounded,
+                      : _isDesktopPlatform
+                          ? Icons.desktop_windows_rounded
+                          : Icons.phone_android_rounded,
                   color: _isNativeSelected(v) && _mode == TtsMode.device
                       ? Theme.of(context).colorScheme.primary
                       : null,
@@ -1438,9 +2026,9 @@ class _VoiceMenuSheetState extends State<_VoiceMenuSheet> {
               ),
                 const Divider(height: 1),
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
                   child: Text(
-                    'Voces en la nube (ElevenLabs)',
+                    'Mejorar voces (gratuito)',
                     style: TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w700,
@@ -1448,23 +2036,26 @@ class _VoiceMenuSheetState extends State<_VoiceMenuSheet> {
                     ),
                   ),
                 ),
-                for (final voice in _elevenVoices)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+                  child: Text(
+                    kIsWeb
+                        ? 'Instala voces de mayor calidad en tu navegador/SO y aparecerán aquí automáticamente.'
+                        : 'Descarga voces de mayor calidad en los ajustes de tu dispositivo y aparecerán aquí automáticamente.',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+                for (final tip in _voiceTips)
                   ListTile(
                     dense: true,
-                    leading: Icon(
-                      Icons.cloud_outlined,
-                      color: _mode == TtsMode.external &&
-                              _externalVoiceId == voice.id
-                          ? Theme.of(context).colorScheme.primary
-                          : null,
-                    ),
-                    title: Text(voice.name),
-                    subtitle: Text(voice.description),
-                    trailing: _mode == TtsMode.external &&
-                            _externalVoiceId == voice.id
-                        ? const Icon(Icons.check_rounded)
-                        : null,
-                    onTap: () => _selectExternal(voice),
+                    leading: Icon(tip.icon, size: 20,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant),
+                    title: Text(tip.title, style: const TextStyle(fontSize: 13)),
+                    subtitle: Text(tip.subtitle, style: const TextStyle(fontSize: 11)),
+                    visualDensity: VisualDensity.compact,
                   ),
                 const Divider(height: 1),
                 _TtsSpeedSelector(),
@@ -1472,6 +2063,210 @@ class _VoiceMenuSheetState extends State<_VoiceMenuSheet> {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+// ── Inline Speed Bar (visible during TTS playback) ──
+
+class _InlineSpeedBar extends StatefulWidget {
+  const _InlineSpeedBar({
+    required this.accent,
+    required this.foreground,
+    required this.onClose,
+  });
+  final Color accent;
+  final Color foreground;
+  final VoidCallback onClose;
+
+  @override
+  State<_InlineSpeedBar> createState() => _InlineSpeedBarState();
+}
+
+class _InlineSpeedBarState extends State<_InlineSpeedBar> {
+  double _rate = 0.6;
+
+  @override
+  void initState() {
+    super.initState();
+    _rate = sl<DeviceTtsRepository>().speechRate;
+  }
+
+  String _rateLabel(double rate) {
+    // Map internal rate (0.0–1.0) to human-readable multiplier.
+    // 0.6 = x1, 0.7 = x1.25, 0.8 = x1.5, 0.9 = x1.75, 1.0 = x2
+    final multiplier = ((rate - 0.6) / 0.4 * 1.0 + 1.0).clamp(0.5, 2.0);
+    return 'x${multiplier.toStringAsFixed(2)}';
+  }
+
+  void _onChanged(double value) {
+    // FIX (desync): only update the visual label during drag. Calling
+    // sl<DeviceTtsRepository>().speechRate = ... here triggered the
+    // setter on every tick, which (a) sent setSpeechRate to the engine
+    // many times async, and (b) restarted the segment tracker with the
+    // NEW rate's timing while the engine was still speaking at the OLD
+    // rate. The result: tracker advanced/lagged independently of voice,
+    // and on the next pause/resume the BLoC's currentWordIndex was far
+    // from where the engine actually was — visible as the highlight
+    // landing on the wrong word after resuming.
+    final clamped = value.clamp(0.3, 1.0);
+    setState(() => _rate = clamped);
+  }
+
+  void _onChangeEnd(double value) {
+    // Commit the rate change exactly once when the user releases the
+    // slider. ReaderTtsRestart does a clean stop()+speak(startIdx) so
+    // the engine and tracker re-align at the same word position.
+    final clamped = _rate.clamp(0.3, 1.0);
+    sl<DeviceTtsRepository>().speechRate = clamped;
+    setTtsSpeechRate(clamped);
+    final bloc = context.read<ReaderBloc>();
+    if (bloc.state.isTtsActive) {
+      bloc.add(const ReaderTtsRestart());
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.6),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.slow_motion_video_rounded, size: 18,
+              color: widget.foreground.withValues(alpha: 0.7)),
+          const SizedBox(width: 4),
+          Expanded(
+            child: SliderTheme(
+              data: SliderThemeData(
+                trackHeight: 3,
+                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+                overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
+                activeTrackColor: widget.accent,
+                inactiveTrackColor: widget.accent.withValues(alpha: 0.25),
+                thumbColor: widget.accent,
+              ),
+              child: Slider(
+                value: _rate,
+                min: 0.3,
+                max: 1.0,
+                onChanged: _onChanged,
+                onChangeEnd: _onChangeEnd,
+              ),
+            ),
+          ),
+          const SizedBox(width: 4),
+          SizedBox(
+            width: 42,
+            child: Text(
+              _rateLabel(_rate),
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: widget.foreground.withValues(alpha: 0.8),
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ),
+          IconButton(
+            visualDensity: VisualDensity.compact,
+            iconSize: 18,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+            tooltip: 'Ocultar',
+            onPressed: widget.onClose,
+            icon: Icon(Icons.close_rounded,
+                color: widget.foreground.withValues(alpha: 0.6)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Bookmark count badge button ──
+//
+// Stateful widget that owns its own bookmark count cache and refreshes
+// when (a) the active book changes via the ReaderBloc, or (b) any
+// bookmark add/remove fires on BookmarkRepository.changes. Previously
+// this was inlined as a chain of `StreamBuilder<String> > BlocBuilder >
+// FutureBuilder`, but the nested FutureBuilder rebuilt with a fresh
+// Future on every parent rebuild — producing brief windows where
+// snap.data was null and onPressed wasn't yet bound to the freshly
+// rendered IconButton, which the user perceived as "the button does
+// nothing on the first tap".
+class _BookmarkCountBadge extends StatefulWidget {
+  const _BookmarkCountBadge({required this.accent, required this.onTap});
+
+  final Color accent;
+  final VoidCallback onTap;
+
+  @override
+  State<_BookmarkCountBadge> createState() => _BookmarkCountBadgeState();
+}
+
+class _BookmarkCountBadgeState extends State<_BookmarkCountBadge> {
+  int _count = 0;
+  String? _watchedBookId;
+  StreamSubscription<String>? _changesSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _changesSub = sl<BookmarkRepository>().changes.listen((bookId) {
+      if (bookId == _watchedBookId) _refresh();
+    });
+    // Initial fetch deferred to didChangeDependencies so we have a bloc.
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final bookId = context.read<ReaderBloc>().state.bookId;
+    if (bookId.isNotEmpty && bookId != _watchedBookId) {
+      _watchedBookId = bookId;
+      _refresh();
+    }
+  }
+
+  Future<void> _refresh() async {
+    final bookId = _watchedBookId;
+    if (bookId == null || bookId.isEmpty) return;
+    final list = await sl<BookmarkRepository>().getBookmarks(bookId);
+    if (!mounted) return;
+    setState(() => _count = list.length);
+  }
+
+  @override
+  void dispose() {
+    _changesSub?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Listen to BLoC bookId changes so the badge refreshes when the
+    // user navigates between books without unmounting the reader page.
+    return BlocListener<ReaderBloc, ReaderState>(
+      listenWhen: (prev, curr) => prev.bookId != curr.bookId,
+      listener: (_, s) {
+        _watchedBookId = s.bookId;
+        _refresh();
+      },
+      child: IconButton(
+        onPressed: widget.onTap,
+        tooltip: 'Marcadores ($_count)',
+        icon: _count > 0
+            ? Badge(
+                label: Text('$_count'),
+                backgroundColor: widget.accent,
+                child: const Icon(Icons.bookmarks_rounded),
+              )
+            : const Icon(Icons.bookmarks_outlined),
       ),
     );
   }
@@ -1571,19 +2366,61 @@ class _TtsSpeedSelectorState extends State<_TtsSpeedSelector> {
   }
 }
 
-// ── Voice catalog ──
+// ── Free voice tips ──
 
-class _Voice {
-  const _Voice(this.id, this.name, this.description);
-  final String id;
-  final String name;
-  final String description;
+class _VoiceTip {
+  const _VoiceTip(this.icon, this.title, this.subtitle);
+  final IconData icon;
+  final String title;
+  final String subtitle;
 }
 
-const _elevenVoices = [
-  _Voice('IT3qq4f9SOwYMAmpJ9pW', 'Español MX', 'Voz femenina mexicana'),
-  _Voice('FGlbemCpQBuN6Wl0xb0m', 'Español ES', 'Voz masculina española'),
-  _Voice('j5KPlErZBIQsqRqS4S3S', 'Español US', 'Voz neutra latina'),
-  _Voice('21m00Tcm4TlvDq8ikWAW', 'Rachel', 'Voz femenina cálida (EN)'),
-  _Voice('ErXwobaYiN019PkySvjV', 'Antoni', 'Voz masculina profunda (EN)'),
-];
+List<_VoiceTip> get _voiceTips {
+  if (kIsWeb) {
+    return const [
+      _VoiceTip(Icons.web, 'Chrome/Edge',
+          'Instala voces del SO; Chrome las detecta automáticamente'),
+      _VoiceTip(Icons.travel_explore, 'Firefox',
+          'about:config → media.webspeech.synth.enabled = true'),
+      _VoiceTip(Icons.auto_awesome, 'Tip',
+          'Las voces "Neural", "Natural" o "Enhanced" suenan mucho mejor que las estándar'),
+    ];
+  }
+  switch (defaultTargetPlatform) {
+    case TargetPlatform.windows:
+      return const [
+        _VoiceTip(Icons.desktop_windows, 'Windows',
+            'Configuración → Hora e idioma → Voz → Añadir voces (Natural Voices)'),
+        _VoiceTip(Icons.auto_awesome, 'Tip',
+            'Las voces "Neural", "Natural" o "Enhanced" suenan mucho mejor que las estándar'),
+      ];
+    case TargetPlatform.macOS:
+      return const [
+        _VoiceTip(Icons.desktop_mac, 'macOS',
+            'Ajustes del Sistema → Accesibilidad → Contenido hablado → Voces → Descargar "Enhanced"'),
+        _VoiceTip(Icons.auto_awesome, 'Tip',
+            'Las voces "Neural", "Natural" o "Enhanced" suenan mucho mejor que las estándar'),
+      ];
+    case TargetPlatform.linux:
+      return const [
+        _VoiceTip(Icons.computer, 'Linux',
+            'Instala espeak-ng o speech-dispatcher con voces adicionales'),
+        _VoiceTip(Icons.auto_awesome, 'Tip',
+            'Las voces "Neural", "Natural" o "Enhanced" suenan mucho mejor que las estándar'),
+      ];
+    case TargetPlatform.iOS:
+      return const [
+        _VoiceTip(Icons.phone_iphone, 'iOS',
+            'Ajustes → Accesibilidad → Contenido hablado → Voces → Descargar "Enhanced"'),
+        _VoiceTip(Icons.auto_awesome, 'Tip',
+            'Las voces "Neural", "Natural" o "Enhanced" suenan mucho mejor que las estándar'),
+      ];
+    default:
+      return const [
+        _VoiceTip(Icons.phone_android, 'Android',
+            'Ajustes → Sistema → Idioma → TTS → Instalar voces de Google (Neural2)'),
+        _VoiceTip(Icons.auto_awesome, 'Tip',
+            'Las voces "Neural", "Natural" o "Enhanced" suenan mucho mejor que las estándar'),
+      ];
+  }
+}

@@ -10,8 +10,11 @@ void main() {
       });
 
       test('applies EMA when skipCalibration is false', () {
+        // Session 15: blend changed from 0.3/0.7 → 0.5/0.5 so the
+        // calibration tracks the real engine in 2-3 segments instead
+        // of 5+.
         final result = SegmentProgressTracker.combineCalibration(50.0, 70.0);
-        expect(result, closeTo(50.0 * 0.3 + 70.0 * 0.7, 0.001));
+        expect(result, closeTo(50.0 * 0.5 + 70.0 * 0.5, 0.001));
       });
 
       test('returns previous when skipCalibration is true', () {
@@ -46,7 +49,7 @@ void main() {
           calibrated,
           52.0,
         )!;
-        expect(calibrated, closeTo(50.0 * 0.3 + 52.0 * 0.7, 0.001));
+        expect(calibrated, closeTo(50.0 * 0.5 + 52.0 * 0.5, 0.001));
       });
     });
 

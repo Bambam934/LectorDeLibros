@@ -2,9 +2,12 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:fpdart/fpdart.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../../core/errors/failures.dart';
 import '../../domain/repositories/tts_repository.dart';
+import 'tts/desktop_tts_adapter.dart';
+import 'tts/language_detector.dart';
 import 'tts/native_mobile_tts_adapter.dart';
 import 'tts/segment_progress_tracker.dart';
 import 'tts/tts_adapter.dart';
@@ -16,7 +19,14 @@ class DeviceTtsRepository implements TtsRepository {
 
   static TtsAdapter _createAdapter() {
     if (kIsWeb) return WebTtsAdapter();
-    return NativeMobileTtsAdapter();
+    switch (defaultTargetPlatform) {
+      case TargetPlatform.windows:
+      case TargetPlatform.macOS:
+      case TargetPlatform.linux:
+        return DesktopTtsAdapter();
+      default:
+        return NativeMobileTtsAdapter();
+    }
   }
 
   final TtsAdapter _adapter;
@@ -86,6 +96,17 @@ class DeviceTtsRepository implements TtsRepository {
   /// doesn't desync after a recovery slice.
   SpeakSegment? _currentEffectiveSegment;
 
+  /// Segment whose tracker should be started the moment the engine's
+  /// startHandler fires. We park the segment here in `_speakSegmentLoop`
+  /// instead of starting the tracker immediately, so the tracker's
+  /// stopwatch aligns with the actual audio output on platforms whose
+  /// engines take noticeable time between speak() and the first audible
+  /// word (Windows SAPI5 ~200-500ms). Without this offset correction the
+  /// estimated tracker runs ~1 word ahead of the voice for the entire
+  /// segment, which is the dominant cause of perceived desync on Windows.
+  SpeakSegment? _pendingTrackerSegment;
+  int? _pendingTrackerGeneration;
+
   double _speechRate = 0.6;
 
   double get speechRate => _speechRate;
@@ -109,12 +130,71 @@ class DeviceTtsRepository implements TtsRepository {
   }
 
   Map<String, String>? _selectedVoice;
+  String? _detectedLanguage;
+  bool autoLanguageEnabled = true;
+
+  // ── Calibration persistence ─────────────────────────────────────────
+  //
+  // The estimated-tracker baseline (_calibratedMsPerChar) is only useful
+  // *after* the first segment of a reading session has finished. With the
+  // earlier in-memory-only model, every fresh app launch (and every
+  // play/pause cycle on platforms without word boundaries) had to re-pay
+  // that "first segment is uncalibrated" cost — which is precisely the
+  // window the user perceives as "the highlight is lagging the voice".
+  //
+  // Persisting the latest calibration per (platform, voice) lets the very
+  // next play() — even after a full app restart — start with a tracker
+  // already aligned to the real engine speed. We deliberately key on the
+  // voice name because different voices (Microsoft Sabina vs Microsoft
+  // Helena, Chrome default vs Edge default) have measurably different
+  // characters-per-second rates and sharing a single number across all of
+  // them would re-introduce drift after a voice swap.
+  static const String _calibrationKeyPrefix = 'tts_calibration_msPerChar';
+
+  String get _platformTag {
+    if (kIsWeb) return 'web';
+    return defaultTargetPlatform.name;
+  }
+
+  String get _calibrationKey {
+    final voice = _selectedVoice?['name'] ?? 'default';
+    return '${_calibrationKeyPrefix}_${_platformTag}_$voice';
+  }
+
+  Future<void> _loadCalibration() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final stored = prefs.getDouble(_calibrationKey);
+      if (stored != null && stored >= 20 && stored <= 200) {
+        _calibratedMsPerChar = stored;
+        debugPrint('[DeviceTTS] loaded persisted calibration: '
+            'key=$_calibrationKey msPerChar=$stored');
+      }
+    } catch (e) {
+      debugPrint('[DeviceTTS] loadCalibration failed: $e');
+    }
+  }
+
+  Future<void> _persistCalibration() async {
+    final value = _calibratedMsPerChar;
+    if (value == null || value < 20 || value > 200) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble(_calibrationKey, value);
+    } catch (e) {
+      debugPrint('[DeviceTTS] persistCalibration failed: $e');
+    }
+  }
 
   Map<String, String>? get selectedVoice => _selectedVoice;
+
+  String? get detectedLanguage => _detectedLanguage;
 
   TtsCapabilities get capabilities => _adapter.capabilities;
 
   bool get isEstimatingProgress {
+    // Platforms without reliable word-boundary events always estimate.
+    if (!_adapter.capabilities.supportsWordBoundary) return true;
     final adapter = _adapter;
     if (adapter is WebTtsAdapter) {
       return adapter.isEstimatingProgress;
@@ -159,6 +239,13 @@ class DeviceTtsRepository implements TtsRepository {
       _selectedVoice = Map<String, String>.from(voice);
       debugPrint(
           '[DeviceTTS] setVoice ok: ${voice['name']} (${voice['locale']})');
+      // Voices have measurably different cadences. Drop the in-memory
+      // calibration (which was tuned for the previous voice) and load
+      // the persisted value for this voice, if any. Otherwise the next
+      // segment would inherit a stale msPerChar and the highlight would
+      // drift again until segment 2.
+      _calibratedMsPerChar = null;
+      unawaited(_loadCalibration());
     } catch (e) {
       debugPrint('[DeviceTTS] setVoice error: $e');
     } finally {
@@ -198,6 +285,23 @@ class DeviceTtsRepository implements TtsRepository {
         }
         if (_isSegmentSpeaking) {
           _emit(TtsPlaybackStatus.playing);
+        }
+        // Latency-corrected tracker start. _speakSegmentLoop parks the
+        // segment in _pendingTrackerSegment instead of starting the
+        // tracker eagerly; we only kick the timer wheel here, when the
+        // engine confirms it has begun producing audio. On Windows SAPI5
+        // this removes a 200-500ms "tracker is already running but no
+        // sound yet" window that used to leave the highlight one full
+        // word ahead of the voice for the entire segment.
+        final pending = _pendingTrackerSegment;
+        final pendingGen = _pendingTrackerGeneration;
+        if (pending != null &&
+            pendingGen == _speakGeneration &&
+            _useEstimatedProgress &&
+            _isSegmentSpeaking) {
+          _pendingTrackerSegment = null;
+          _pendingTrackerGeneration = null;
+          _startSegmentTracker(pending);
         }
       });
 
@@ -294,6 +398,25 @@ class DeviceTtsRepository implements TtsRepository {
           if (adapter.isEstimatingProgress) return;
         }
 
+        // Desktop (SAPI5/AVSpeech): progress events are sporadic and
+        // unreliable, but the few that arrive ARE accurate. Use them to
+        // RESYNC the tracker (without cancelling it) so the follower
+        // self-corrects over time and stays close to the actual voice.
+        if (!_adapter.capabilities.supportsWordBoundary) {
+          if (_segmentTracker != null && _segmentTracker!.isRunning) {
+            final localIdx = _binarySearch(_charOffsets, start);
+            _segmentTracker!.resyncTo(localIdx);
+            _lastKnownLocalWordIdx = localIdx;
+            // Emit immediately so the highlight snaps to the verified
+            // word, then the timer resumes from there.
+            final globalIdx = _startOffset + localIdx;
+            if (!_wordIndexController.isClosed) {
+              _wordIndexController.add(globalIdx);
+            }
+          }
+          return;
+        }
+
         _receivedRealProgress = true;
         _cancelEstimatedProgress();
         _useEstimatedProgress = false;
@@ -346,7 +469,15 @@ class DeviceTtsRepository implements TtsRepository {
       _isInitialized = true;
       _initFailed = false;
       debugPrint('[DeviceTTS] initialization complete '
-          '(adapter: ${kIsWeb ? 'Web' : 'NativeMobile'})');
+          '(adapter: ${_adapter.runtimeType})');
+
+      // Hydrate the calibration cache so the first segment of the user's
+      // very first play() this session already uses last session's
+      // measured msPerChar, instead of the conservative _baseMsPerWord
+      // default. Best-effort and fire-and-forget — failure here just
+      // means we fall back to the default for one segment.
+      unawaited(_loadCalibration());
+
       return right(unit);
     } catch (e) {
       debugPrint('[DeviceTTS] init error: $e');
@@ -369,6 +500,21 @@ class DeviceTtsRepository implements TtsRepository {
     }
 
     if (!_platformSupported) return right(unit);
+
+    // Auto-detect language from text content and configure TTS accordingly.
+    // Only if no voice was manually selected (which already sets its locale).
+    if (autoLanguageEnabled && _selectedVoice == null && text.isNotEmpty) {
+      final detected = LanguageDetector.detect(text);
+      if (detected != _detectedLanguage) {
+        _detectedLanguage = detected;
+        debugPrint('[DeviceTTS] auto-detected language: $detected');
+        try {
+          await _adapter.setLanguage(detected);
+        } catch (e) {
+          debugPrint('[DeviceTTS] setLanguage($detected) failed: $e');
+        }
+      }
+    }
 
     try {
       final wasSpeaking = _isSegmentSpeaking;
@@ -400,6 +546,22 @@ class DeviceTtsRepository implements TtsRepository {
       _recoveryPending = false;
       _lastKnownLocalWordIdx = 0;
 
+      // Previously we always reset _calibratedMsPerChar at the start of
+      // each speak() on platforms without word boundaries — but that
+      // meant every play/pause cycle threw away the calibration and the
+      // first segment had to use _baseMsPerWord again (visibly slower
+      // than the real voice). combineCalibration already rejects
+      // out-of-bounds samples (20..200 ms/char), so we keep any value
+      // that's already inside the safe range and only nuke obvious
+      // garbage. Result: pressing pause→play resumes with the right
+      // timing instead of re-introducing the initial drift every time.
+      final cached = _calibratedMsPerChar;
+      if (cached != null && (cached < 20 || cached > 200)) {
+        debugPrint('[DeviceTTS] discarding out-of-bounds cached '
+            'msPerChar=$cached at speak() start');
+        _calibratedMsPerChar = null;
+      }
+
       final clampedStart =
           startWordIndex.clamp(0, words.isEmpty ? 0 : words.length - 1);
 
@@ -407,11 +569,29 @@ class DeviceTtsRepository implements TtsRepository {
           clampedStart > 0 ? words.sublist(clampedStart) : words;
       final speakText = _buildSpeakText(text, words, clampedStart);
 
-      // FIX 32 — split by word count first, then enforce per-utterance
-      // char cap (FIX 31). On Web this prevents Chrome from silently
-      // firing "interrupted" once the utterance exceeds ~200 chars.
+      // FIX 78 (session 16) — split by SENTENCE first only on platforms
+      // that depend on the timer-based estimated tracker (Web Speech,
+      // Windows SAPI5, macOS AVSpeech). Aligning segment boundaries
+      // with the engine's natural pauses (`.`, `!`, `?`, `;`) absorbs
+      // those pauses at segment-swap time where the tracker resets,
+      // instead of letting the timer drift past them mid-utterance.
+      //
+      // On Android / iOS (`supportsWordBoundary = true`) the engine
+      // emits real per-word progress events, so the tracker is never
+      // used and there is no drift to fix. Sentence-splitting would
+      // just chop a smooth audio stream into many tiny utterances and
+      // introduce ~50-100 ms of inter-utterance latency on each one
+      // (the engine has its own startup cost per `speak()` call).
+      // That degrades a flow the user already considers ideal, so we
+      // explicitly skip sentence-splitting on those platforms.
+      //
+      // enforceMaxSegmentLength still runs everywhere so Web's 180-char
+      // utterance cap and SAPI5's 800-char practical limit are honoured.
+      final initialSegments = _adapter.capabilities.supportsWordBoundary
+          ? splitIntoSegments(speakText, speakWords, clampedStart)
+          : splitIntoSentences(speakText, speakWords, clampedStart);
       _pendingSegments = enforceMaxSegmentLength(
-        splitIntoSegments(speakText, speakWords, clampedStart),
+        initialSegments,
         _adapter.capabilities.maxUtteranceChars,
       );
       _currentSegmentIndex = 0;
@@ -419,8 +599,13 @@ class DeviceTtsRepository implements TtsRepository {
       _stopRequested = false;
       _receivedRealProgress = false;
 
+      // Platforms without reliable word-boundary events (desktop SAPI5,
+      // Web Speech after detection) must use the timer-based estimated
+      // progress tracker from the very first segment.
       final adapter = _adapter;
-      if (adapter is WebTtsAdapter && adapter.isEstimatingProgress) {
+      final forceEstimated = !_adapter.capabilities.supportsWordBoundary;
+      if (forceEstimated ||
+          (adapter is WebTtsAdapter && adapter.isEstimatingProgress)) {
         _useEstimatedProgress = true;
         _emitEstimating(true);
       } else {
@@ -532,7 +717,26 @@ class DeviceTtsRepository implements TtsRepository {
       _currentEffectiveSegment = trackerSegment;
 
       if (_useEstimatedProgress) {
-        _startSegmentTracker(trackerSegment);
+        // Defer tracker start until startHandler fires (see comment on
+        // _pendingTrackerSegment). Falls back to immediate start if the
+        // engine never fires startHandler within ~700ms, so we never
+        // leave the highlight completely frozen.
+        _pendingTrackerSegment = trackerSegment;
+        _pendingTrackerGeneration = generation;
+        final guardedGen = generation;
+        Future<void>.delayed(const Duration(milliseconds: 700), () {
+          if (_pendingTrackerSegment != null &&
+              _pendingTrackerGeneration == guardedGen &&
+              _useEstimatedProgress &&
+              _isSegmentSpeaking) {
+            debugPrint('[DeviceTTS] tracker fallback start '
+                '(no startHandler within 700ms) seg=$_currentSegmentIndex');
+            final segToStart = _pendingTrackerSegment!;
+            _pendingTrackerSegment = null;
+            _pendingTrackerGeneration = null;
+            _startSegmentTracker(segToStart);
+          }
+        });
       } else {
         _startEstimatedProgressDetection();
       }
@@ -560,7 +764,17 @@ class DeviceTtsRepository implements TtsRepository {
 
         if (_stopRequested || generation != _speakGeneration) break;
 
-        if (speakResult == true) {
+        // FIX 82 (session 17) — `flutter_tts.speak()` reports success
+        // with different types per platform: `true` on iOS / Web,
+        // integer `1` on Android / Windows / macOS. The previous
+        // `speakResult == true` check was true ONLY for the bool case,
+        // so on Android we silently took the retry path even after a
+        // perfectly successful utterance — re-issuing the SAME text
+        // ~500 ms later, which the user heard as the chapter restarting
+        // and saw as the highlight jumping back to the start of the
+        // segment. Treat both shapes as success.
+        final isSuccess = speakResult == true || speakResult == 1;
+        if (isSuccess) {
           if (!_segmentCompletionCompleter!.isCompleted) {
             _segmentCompletionCompleter!.complete();
           }
@@ -597,13 +811,27 @@ class DeviceTtsRepository implements TtsRepository {
 
       if (_segmentTracker != null && _segmentTracker!.isRunning) {
           final measured = _segmentTracker!.measuredMsPerChar;
+          final before = _calibratedMsPerChar;
+          // We used to skip calibration for segments containing digits
+          // (e.g. "1967", dates) on the assumption that number
+          // expansion would skew the timing. But the tracker's
+          // `_effectiveCharCount` already counts the expanded form via
+          // `computeAudibleCharCount`, so the measured ms/char IS valid
+          // for those segments. Skipping just delayed convergence on
+          // texts with frequent dates / numbered headings.
           _calibratedMsPerChar = SegmentProgressTracker.combineCalibration(
             _calibratedMsPerChar, measured,
-            skipCalibration: segment.hasNumbers,
+            skipCalibration: false,
           );
           debugPrint('[DeviceTTS] calibratedMsPerChar: '
-              '$_calibratedMsPerChar (measured: $measured'
-              '${segment.hasNumbers ? ', SKIP numbers' : ''})');
+              '$_calibratedMsPerChar (measured: $measured)');
+          // Persist asynchronously so the next session starts already
+          // calibrated. Only write if the value actually changed and is
+          // inside the safe range (the persist method also guards).
+          if (_calibratedMsPerChar != null &&
+              _calibratedMsPerChar != before) {
+            unawaited(_persistCalibration());
+          }
         }
       _segmentTracker?.cancel();
       _segmentTracker = null;
@@ -640,7 +868,11 @@ class DeviceTtsRepository implements TtsRepository {
     }
   }
 
-  void _startSegmentTracker(SpeakSegment segment, {int? generation}) {
+  void _startSegmentTracker(
+    SpeakSegment segment, {
+    int? generation,
+    int resumeAtLocalWord = 0,
+  }) {
     generation ??= _speakGeneration;
     _segmentTracker?.cancel();
 
@@ -675,6 +907,13 @@ class DeviceTtsRepository implements TtsRepository {
       }
     },
   );
+  // Seed the tracker at the requested resume point. Used when speech
+  // rate changes mid-segment: the engine keeps speaking from where it
+  // was, so the new tracker must start from the last known local word
+  // instead of jumping the highlight back to the segment start.
+  if (resumeAtLocalWord > 0) {
+    _segmentTracker!.resyncTo(resumeAtLocalWord);
+  }
   }
 
   void _restartSegmentTracker() {
@@ -683,7 +922,17 @@ class DeviceTtsRepository implements TtsRepository {
             ? _pendingSegments[_currentSegmentIndex]
             : null);
     if (seg == null) return;
-    _startSegmentTracker(seg);
+    // FIX — when restarting mid-segment (e.g. user dragged the speed
+    // slider and we re-derive the tick interval for the new rate), the
+    // engine keeps speaking from where it is, so the new tracker must
+    // resume at the last known local word — NOT reset to 0. Resetting
+    // to 0 caused the highlight to jump backwards to the start of the
+    // current segment every time speed changed.
+    final resumeAt = _lastKnownLocalWordIdx.clamp(
+      0,
+      seg.words.isEmpty ? 0 : seg.words.length - 1,
+    );
+    _startSegmentTracker(seg, resumeAtLocalWord: resumeAt);
   }
 
   void _startEstimatedProgressDetection() {
@@ -719,6 +968,40 @@ class DeviceTtsRepository implements TtsRepository {
     final st = StackTrace.current.toString().split('\n');
     final callers = st.skip(1).take(6).join(' | ');
     debugPrint('[DeviceTTS] stop() callers: $callers');
+
+    // Capture an in-flight calibration sample BEFORE we tear down the
+    // tracker. Without this, a user who pause/restart-spams on Windows
+    // (because the highlight looks ahead of the voice) never lets a
+    // segment complete, so _calibratedMsPerChar stays null forever and
+    // the next speak() falls back to the conservative 400ms/word base
+    // again. Sampling here lets us learn from partial segments too as
+    // long as they ran long enough to be meaningful.
+    final liveTracker = _segmentTracker;
+    if (liveTracker != null && liveTracker.isRunning) {
+      final elapsedMs = liveTracker.elapsed.inMilliseconds;
+      if (elapsedMs >= 3000) {
+        final measured = liveTracker.measuredMsPerChar;
+        final before = _calibratedMsPerChar;
+        _calibratedMsPerChar = SegmentProgressTracker.combineCalibration(
+          _calibratedMsPerChar,
+          measured,
+          // Sampling at stop() is best-effort — we always accept the
+          // measurement here, including for segments that contained
+          // numbers. computeAudibleCharCount already inflates the
+          // denominator for expanded digits so the ratio is a sensible
+          // approximation.
+          skipCalibration: false,
+        );
+        debugPrint('[DeviceTTS] partial calibration at stop: '
+            'measured=$measured elapsed=${elapsedMs}ms '
+            'before=$before after=$_calibratedMsPerChar');
+        if (_calibratedMsPerChar != null &&
+            _calibratedMsPerChar != before) {
+          unawaited(_persistCalibration());
+        }
+      }
+    }
+
     // FIX 34 — flag this stop as user-requested so the engine's
     // subsequent "interrupted" error is treated as expected, not a
     // recoverable overflow.
@@ -955,6 +1238,152 @@ class DeviceTtsRepository implements TtsRepository {
     return segments;
   }
 
+  /// FIX 78 (session 16) — Sentence-aligned segmentation.
+  ///
+  /// The single largest source of perceived desync between the highlight
+  /// and the spoken audio on Windows SAPI5 and Web Speech is that those
+  /// engines insert *natural* pauses at sentence-ending punctuation
+  /// (`.`, `!`, `?`, `;`) — anywhere from ~150 ms (semicolon) up to
+  /// ~500 ms (period followed by paragraph break). The timer-based
+  /// SegmentProgressTracker has no way to know about those pauses: it
+  /// keeps advancing at the estimated ms/word rate, so once the engine
+  /// has paused N times mid-segment the highlight is N×~300 ms ahead of
+  /// the voice. With a single 800-char (~130-word) Windows segment that
+  /// contains 5–8 sentences, the cumulative drift exceeds three words
+  /// before the segment ends — which the user perceives as "totally
+  /// desynchronised" right after the first paragraph.
+  ///
+  /// The industry-standard fix used by Voice Dream Reader, NaturalReader
+  /// on Windows, and Speechify when running on top of SAPI5 / Web Speech
+  /// is to give each *sentence* its own utterance:
+  ///
+  ///   • The engine's pause coincides with the boundary between two of
+  ///     OUR segments, where the tracker is destroyed and recreated for
+  ///     the next sentence — the pause is absorbed for free.
+  ///   • Calibration error cannot accumulate across sentences, because
+  ///     the tracker resets at every boundary.
+  ///   • The next sentence's tracker is fully re-seeded with the last
+  ///     calibrated ms/char, so it starts already tuned.
+  ///
+  /// This method splits `text` at sentence-ending punctuation followed
+  /// by whitespace, while keeping each segment's `words` slice aligned
+  /// with the original word list (so the highlight follower keeps
+  /// working). Very short fragments (<30 chars, e.g. "Sí.") are merged
+  /// with their neighbour to avoid choppy speech and excessive engine
+  /// thrash. If the source text has no punctuation at all (some
+  /// poetry, weird OCR output), the whole input is returned as a single
+  /// segment and the existing `enforceMaxSegmentLength` will cap it.
+  static List<SpeakSegment> splitIntoSentences(
+    String text,
+    List<String> words,
+    int globalStartIndex, {
+    int minMergeChars = 30,
+  }) {
+    if (text.isEmpty || words.isEmpty) {
+      return splitIntoSegments(text, words, globalStartIndex);
+    }
+
+    // Map each word to its char span in `text` (sequential cursor-based
+    // search, same logic as splitIntoSegments to avoid 'de' inside 'del'
+    // false positives).
+    final wordCharStart = <int>[];
+    final wordCharEnd = <int>[];
+    {
+      int cursor = 0;
+      for (final w in words) {
+        final idx = text.indexOf(w, cursor);
+        if (idx >= 0) {
+          wordCharStart.add(idx);
+          wordCharEnd.add(idx + w.length);
+          cursor = idx + w.length;
+        } else {
+          wordCharStart.add(cursor);
+          wordCharEnd.add(cursor);
+        }
+      }
+    }
+
+    // Sentence boundary = run of `.!?;` followed by whitespace or EOS.
+    // We deliberately do NOT split on `,` or `:` here — the pauses
+    // those introduce are short (~100 ms) and well within the tracker's
+    // tolerance, while splitting on them would produce many tiny
+    // segments and force the engine into staccato output.
+    final boundaryRegex = RegExp(r'[\.!?;]+(?=\s|$)');
+
+    final boundaries = <int>[];
+    for (final m in boundaryRegex.allMatches(text)) {
+      boundaries.add(m.end);
+    }
+    if (boundaries.isEmpty || boundaries.last < text.length) {
+      boundaries.add(text.length);
+    }
+
+    final raw = <SpeakSegment>[];
+    int charCursor = 0;
+    int wordCursor = 0;
+
+    for (final boundaryEnd in boundaries) {
+      // Walk forward through words whose char start lies before the
+      // boundary; those belong to this sentence.
+      int wEnd = wordCursor;
+      while (wEnd < words.length && wordCharStart[wEnd] < boundaryEnd) {
+        wEnd++;
+      }
+      if (wEnd == wordCursor) {
+        // Boundary fell BEFORE the next unconsumed word (e.g. leading
+        // whitespace, repeated punctuation). Skip the char range and
+        // keep going so we don't emit an empty segment.
+        charCursor = boundaryEnd;
+        continue;
+      }
+      final segText = text.substring(charCursor, boundaryEnd).trim();
+      final segWords = words.sublist(wordCursor, wEnd);
+      if (segText.isNotEmpty && segWords.isNotEmpty) {
+        raw.add(SpeakSegment(
+          text: segText,
+          words: segWords,
+          globalStartWordIndex: globalStartIndex + wordCursor,
+          audibleCharCount: computeAudibleCharCount(segText),
+          hasNumbers: detectNumbers(segText),
+        ));
+      }
+      wordCursor = wEnd;
+      charCursor = boundaryEnd;
+    }
+
+    if (raw.isEmpty) {
+      return splitIntoSegments(text, words, globalStartIndex);
+    }
+
+    // Merge fragments shorter than `minMergeChars` with the next
+    // segment. Avoids choppy "Sí." / "¿Eh?" utterances that produce
+    // disproportionate engine latency.
+    final merged = <SpeakSegment>[];
+    SpeakSegment? buffer;
+    for (final seg in raw) {
+      if (buffer == null) {
+        buffer = seg;
+        continue;
+      }
+      if (buffer.text.length < minMergeChars) {
+        final mergedText = '${buffer.text} ${seg.text}';
+        final mergedWords = <String>[...buffer.words, ...seg.words];
+        buffer = SpeakSegment(
+          text: mergedText,
+          words: mergedWords,
+          globalStartWordIndex: buffer.globalStartWordIndex,
+          audibleCharCount: computeAudibleCharCount(mergedText),
+          hasNumbers: buffer.hasNumbers || seg.hasNumbers,
+        );
+      } else {
+        merged.add(buffer);
+        buffer = seg;
+      }
+    }
+    if (buffer != null) merged.add(buffer);
+    return merged;
+  }
+
   /// FIX 32 — Hard cap on per-utterance characters.
   ///
   /// The base [splitIntoSegments] partitions by word count, which on Web
@@ -1123,6 +1552,8 @@ class DeviceTtsRepository implements TtsRepository {
     _pendingSegments = [];
     _currentSegmentIndex = 0;
     _currentEffectiveSegment = null;
+    _pendingTrackerSegment = null;
+    _pendingTrackerGeneration = null;
     _segmentTracker?.cancel();
     _segmentTracker = null;
   }
