@@ -3,6 +3,9 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import '../../../../core/sync/client_id_service.dart';
+import '../../../../core/sync/sync_event.dart';
+import '../../../../core/sync/sync_stream_client.dart';
 import '../../data/repositories/audio_tts_repository.dart';
 import '../../data/repositories/chapter_cache_repository.dart';
 import '../../domain/entities/chapter.dart';
@@ -38,10 +41,14 @@ class ReaderBloc extends Bloc<ReaderEvent, ReaderState> {
     required TtsRepository ttsRepository,
     AudioTtsRepository? audioTtsRepository,
     ChapterCacheRepository? chapterCacheRepository,
+    SyncStreamClient? syncStreamClient,
+    ClientIdService? clientIdService,
   }) : _readerRepository = readerRepository,
        _ttsRepository = ttsRepository,
        _audioTtsRepository = audioTtsRepository,
        _chapterCache = chapterCacheRepository,
+       _syncStreamClient = syncStreamClient,
+       _clientIdService = clientIdService,
        super(const ReaderState()) {
     on<ReaderStarted>(_onStarted);
     on<ReaderChapterSelected>(_onChapterSelected);
@@ -49,6 +56,9 @@ class ReaderBloc extends Bloc<ReaderEvent, ReaderState> {
     on<ReaderProgressSaved>(_onProgressSaved);
     on<ReaderTtsToggled>(_onTtsToggled);
     on<ReaderTtsRestart>(_onTtsRestart);
+    on<ReaderRemoteProgressReceived>(_onRemoteProgressReceived);
+    on<ReaderRemoteProgressAccepted>(_onRemoteProgressAccepted);
+    on<ReaderRemoteProgressDismissed>(_onRemoteProgressDismissed);
     on<_TtsWordIndexUpdated>(_onTtsWordIndexUpdated);
     on<_TtsStatusUpdated>(_onTtsStatusUpdated);
     on<_TtsTick>((event, emit) {
@@ -56,12 +66,24 @@ class ReaderBloc extends Bloc<ReaderEvent, ReaderState> {
       final elapsed = _ttsAccumulated + DateTime.now().difference(_ttsStartedAt!);
       emit(state.copyWith(ttsElapsed: elapsed));
     });
+
+    // Subscribe to the realtime sync channel. The subscription survives
+    // for the life of the bloc; if no client is wired we silently
+    // skip — keeps the bloc usable in tests and in builds where sync
+    // is disabled.
+    final sync = _syncStreamClient;
+    if (sync != null) {
+      _syncSub = sync.events.listen(_handleIncomingSyncEvent);
+    }
   }
 
   final ReaderRepository _readerRepository;
   final TtsRepository _ttsRepository;
   final ChapterCacheRepository? _chapterCache;
   final AudioTtsRepository? _audioTtsRepository;
+  final SyncStreamClient? _syncStreamClient;
+  final ClientIdService? _clientIdService;
+  StreamSubscription<SyncEvent>? _syncSub;
 
   Timer? _saveDebounceTimer;
   // Hard throttle for save-during-TTS: even if the debounce keeps
@@ -584,6 +606,13 @@ class ReaderBloc extends Bloc<ReaderEvent, ReaderState> {
       (_) {
         _lastSavedChapterId = currentChapter.id;
         _lastSavedGlobalWordIndex = globalWordIndex;
+        // Stamp the local write so an incoming SSE event with an
+        // EARLIER lastReadAt can be safely discarded as stale.
+        // Server is the actual authority on the timestamp, but the
+        // local one is a tight enough lower bound — every server ts
+        // for OUR write will be ≥ this value (network latency only
+        // makes the server's later).
+        _lastLocalSaveAtIso = DateTime.now().toUtc().toIso8601String();
       },
     );
   }
@@ -659,6 +688,120 @@ class ReaderBloc extends Bloc<ReaderEvent, ReaderState> {
     return (globalWordIndex / totalWords).clamp(0, 1).toDouble();
   }
 
+  // ────────────────────── REMOTE SYNC HANDLERS ──────────────────────
+
+  /// Filters incoming sync events for ones the reader cares about:
+  /// `progress.updated` events that (a) originate on a different
+  /// device (not our own echo), (b) target the currently-open book.
+  /// Everything else is dropped silently.
+  void _handleIncomingSyncEvent(SyncEvent event) {
+    if (event is! SyncProgressUpdatedEvent) return;
+    if (state.bookId.isEmpty || event.bookId != state.bookId) return;
+    if (event.isEchoOf(_clientIdService?.cachedId)) return;
+    add(ReaderRemoteProgressReceived(
+      chapterId: event.chapterId,
+      wordIndex: event.wordIndex,
+      lastReadAt: event.lastReadAt,
+    ));
+  }
+
+  void _onRemoteProgressReceived(
+    ReaderRemoteProgressReceived event,
+    Emitter<ReaderState> emit,
+  ) {
+    // Skip the remote update if it pre-dates a write we already made.
+    // This guards against out-of-order delivery: two devices write
+    // back-to-back, and we receive their event AFTER our local write
+    // already moved the position past theirs.
+    final pending = state.pendingRemoteProgress;
+    if (pending != null && event.lastReadAt.compareTo(pending.lastReadAt) < 0) {
+      return;
+    }
+    final localTs = _lastLocalSaveAtIso;
+    if (localTs != null && event.lastReadAt.compareTo(localTs) < 0) {
+      return;
+    }
+    emit(state.copyWith(
+      pendingRemoteProgress: PendingRemoteProgress(
+        chapterId: event.chapterId,
+        wordIndex: event.wordIndex,
+        lastReadAt: event.lastReadAt,
+        receivedAt: DateTime.now(),
+      ),
+    ));
+  }
+
+  Future<void> _onRemoteProgressAccepted(
+    ReaderRemoteProgressAccepted event,
+    Emitter<ReaderState> emit,
+  ) async {
+    final pending = state.pendingRemoteProgress;
+    if (pending == null) return;
+
+    // Pause TTS first so jumping doesn't leave audio playing from the
+    // old position before the highlight jumps to the new one.
+    if (state.isTtsActive) {
+      await _ttsRepository.stop();
+    }
+
+    final chapters = state.chapters;
+    final targetChapterIdx =
+        chapters.indexWhere((c) => c.id == pending.chapterId);
+
+    // Same chapter — just move the word cursor.
+    if (targetChapterIdx == state.currentChapterIndex) {
+      final chapter = state.currentChapter;
+      if (chapter == null) {
+        emit(state.copyWith(clearPendingRemoteProgress: true));
+        return;
+      }
+      final maxIdx = _maxWordIndexForChapter(chapter);
+      final clamped = pending.wordIndex.clamp(0, maxIdx).toInt();
+      emit(state.copyWith(
+        currentWordIndex: clamped,
+        progress: _computeBookProgress(
+          chapters: chapters,
+          chapterIndex: state.currentChapterIndex,
+          chapterWordIndex: clamped,
+        ),
+        clearPendingRemoteProgress: true,
+      ));
+      // Mirror the accepted position back to the server so all peers
+      // converge — without this, the device we accepted from would
+      // still see us at the old position next time it asks.
+      _saveDebounceTimer?.cancel();
+      add(const ReaderProgressSaved());
+      return;
+    }
+
+    // Different chapter — clear pending first so a delayed
+    // `ReaderChapterSelected` handler doesn't re-trigger.
+    emit(state.copyWith(clearPendingRemoteProgress: true));
+    if (targetChapterIdx >= 0) {
+      add(ReaderChapterSelected(pending.chapterId));
+      // Defer the word-index update until the chapter has loaded.
+      // `_onChapterSelected` always resets to word 0 on load, so we
+      // post the real position behind it.
+      Future<void>.delayed(const Duration(milliseconds: 400), () {
+        if (isClosed) return;
+        add(ReaderWordIndexChanged(pending.wordIndex));
+      });
+    }
+  }
+
+  void _onRemoteProgressDismissed(
+    ReaderRemoteProgressDismissed event,
+    Emitter<ReaderState> emit,
+  ) {
+    if (state.pendingRemoteProgress == null) return;
+    emit(state.copyWith(clearPendingRemoteProgress: true));
+  }
+
+  /// Server-authoritative timestamp of the last successful local save.
+  /// Used to discard incoming remote updates that we already
+  /// superseded. Updated in `_persistProgress`.
+  String? _lastLocalSaveAtIso;
+
   @override
   Future<void> close() async {
     _saveDebounceTimer?.cancel();
@@ -666,6 +809,7 @@ class ReaderBloc extends Bloc<ReaderEvent, ReaderState> {
     _ttsElapsedTimer?.cancel();
     _ttsWordSub?.cancel();
     _ttsStatusSub?.cancel();
+    await _syncSub?.cancel();
     if (state.isTtsActive) await _ttsRepository.stop();
     await _persistProgress();
     await super.close();

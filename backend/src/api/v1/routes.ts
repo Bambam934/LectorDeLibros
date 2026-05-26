@@ -969,7 +969,25 @@ export async function registerV1Routes(app: FastifyInstance): Promise<void> {
 	// otherwise-idle connection. Comments are ignored by EventSource.
 	app.get(
 		'/api/v1/sync/stream',
-		{ preHandler: requireAccessToken },
+		{
+			preHandler: [
+				// Browsers' EventSource cannot set custom headers, so the
+				// web client passes the JWT as `?access_token=…`. We copy
+				// it into the Authorization header BEFORE requireAccessToken
+				// runs so the rest of the auth path is unchanged. Native
+				// clients keep sending the Authorization header directly
+				// (preferred — keeps the token out of access logs).
+				async (request, _reply) => {
+					if (request.headers.authorization) return;
+					const q = (request.query as Record<string, unknown> | undefined)
+						?.access_token;
+					if (typeof q === 'string' && q.length > 0) {
+						request.headers.authorization = `Bearer ${q}`;
+					}
+				},
+				requireAccessToken
+			]
+		},
 		async (request, reply) => {
 			const authUser = getAuthenticatedUser(request);
 

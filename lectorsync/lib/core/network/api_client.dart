@@ -2,12 +2,20 @@ import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import '../storage/secure_storage.dart';
+import '../sync/client_id_service.dart';
 
 typedef OnSessionExpired = void Function();
 
+const _mutationMethods = {'POST', 'PUT', 'PATCH', 'DELETE'};
+
 class ApiClient {
-  ApiClient(this._dio, this._secureStorage, {OnSessionExpired? onSessionExpired})
-      : _onSessionExpired = onSessionExpired {
+  ApiClient(
+    this._dio,
+    this._secureStorage, {
+    OnSessionExpired? onSessionExpired,
+    ClientIdService? clientIdService,
+  })  : _onSessionExpired = onSessionExpired,
+        _clientIdService = clientIdService {
     _dio.options.baseUrl = _getBaseUrl();
     _dio.options.connectTimeout = const Duration(seconds: 10);
     _dio.options.receiveTimeout = const Duration(seconds: 10);
@@ -19,6 +27,22 @@ class ApiClient {
             final token = await _secureStorage.getAccessToken();
             if (token != null) {
               options.headers['Authorization'] = 'Bearer $token';
+            }
+          }
+          // Tag mutations with the originating device's stable id so the
+          // realtime-sync push can travel back without us re-applying
+          // our own echo. Reads don't need this — the backend only
+          // attaches clientId to events fired by mutations. We use the
+          // cached value (synchronous) to avoid blocking the request on
+          // SharedPreferences IO; the very first cold-start mutation
+          // may go out unlabeled, which is acceptable because at that
+          // moment the SSE stream hasn't connected yet either.
+          if (_clientIdService != null &&
+              _mutationMethods.contains(options.method.toUpperCase()) &&
+              !options.headers.containsKey('X-Client-Id')) {
+            final id = _clientIdService.cachedId;
+            if (id != null && id.isNotEmpty) {
+              options.headers['X-Client-Id'] = id;
             }
           }
           return handler.next(options);
@@ -56,6 +80,7 @@ class ApiClient {
   final Dio _dio;
   final SecureStorage _secureStorage;
   final OnSessionExpired? _onSessionExpired;
+  final ClientIdService? _clientIdService;
 
   Dio get dio => _dio;
 

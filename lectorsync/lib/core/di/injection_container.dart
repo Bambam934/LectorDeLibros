@@ -8,6 +8,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/network/api_client.dart';
 import '../../core/storage/secure_storage.dart';
+import '../../core/sync/client_id_service.dart';
+import '../../core/sync/sync_stream_client.dart';
 import '../../features/reader/data/repositories/ambient_sound_repository.dart';
 import '../../features/reader/data/repositories/bookmark_repository.dart';
 import '../../features/reader/data/repositories/chapter_cache_repository.dart';
@@ -134,6 +136,17 @@ Future<void> configureDependencies() async {
   if (!sl.isRegistered<SecureStorage>()) {
     sl.registerLazySingleton<SecureStorage>(() => SecureStorage(sl()));
   }
+  // Realtime sync wiring. Registered BEFORE ApiClient so the latter
+  // can pull in ClientIdService for its X-Client-Id header
+  // interceptor. Both are lazy singletons; the cold-start cost is a
+  // single SharedPreferences read on first mutation.
+  if (!sl.isRegistered<ClientIdService>()) {
+    sl.registerLazySingleton<ClientIdService>(ClientIdService.new);
+    // Warm the cache so the very first mutation already carries the
+    // header (otherwise the first request goes out unlabelled and
+    // every device — including us — would treat its echo as fresh).
+    unawaited(sl<ClientIdService>().getId());
+  }
   if (!sl.isRegistered<ApiClient>()) {
     sl.registerLazySingleton<ApiClient>(
       () => ApiClient(
@@ -142,6 +155,15 @@ Future<void> configureDependencies() async {
         onSessionExpired: () {
           _sessionExpiredNotifier.value = !_sessionExpiredNotifier.value;
         },
+        clientIdService: sl<ClientIdService>(),
+      ),
+    );
+  }
+  if (!sl.isRegistered<SyncStreamClient>()) {
+    sl.registerLazySingleton<SyncStreamClient>(
+      () => createSyncStreamClient(
+        baseUrlGetter: () => sl<ApiClient>().dio.options.baseUrl,
+        accessTokenGetter: () => sl<SecureStorage>().getAccessToken(),
       ),
     );
   }

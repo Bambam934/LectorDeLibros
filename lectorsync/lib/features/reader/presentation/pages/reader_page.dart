@@ -7,6 +7,8 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../../core/di/injection_container.dart';
 import '../../../../core/layout/breakpoints.dart';
+import '../../../../core/sync/client_id_service.dart';
+import '../../../../core/sync/sync_stream_client.dart';
 import '../../../../core/utils/haptics.dart';
 import '../../../settings/domain/entities/reading_preferences.dart';
 import '../../../settings/presentation/cubit/preferences_cubit.dart';
@@ -53,6 +55,16 @@ class ReaderPage extends StatelessWidget {
             sl.isRegistered<AudioTtsRepository>() ? sl<AudioTtsRepository>() : null,
         chapterCacheRepository:
             sl.isRegistered<ChapterCacheRepository>() ? sl<ChapterCacheRepository>() : null,
+        // Realtime sync is opt-in via DI: registered in
+        // injection_container.dart only when the app is online and
+        // logged in. Tests / offline-only builds skip the registration
+        // and the bloc gracefully no-ops on the sync side.
+        syncStreamClient: sl.isRegistered<SyncStreamClient>()
+            ? sl<SyncStreamClient>()
+            : null,
+        clientIdService: sl.isRegistered<ClientIdService>()
+            ? sl<ClientIdService>()
+            : null,
       )..add(
           ReaderStarted(
             bookId,
@@ -505,41 +517,100 @@ class _ReaderViewState extends State<_ReaderView>
                   ),
                 )
               : null,
-          body: BlocListener<ReaderBloc, ReaderState>(
-            listenWhen: (prev, curr) {
-              if (prev.currentChapter?.id != curr.currentChapter?.id &&
-                  curr.currentChapter != null) {
-                return true;
-              }
-              if (curr.isTtsActive &&
-                  prev.currentWordIndex != curr.currentWordIndex) {
-                final prevPara =
-                    _findParagraphIndex(prev.currentWordIndex, _wordOffsets);
-                final currPara =
-                    _findParagraphIndex(curr.currentWordIndex, _wordOffsets);
-                if (currPara != prevPara) return true;
-              }
-              return false;
-            },
-            listener: (context, state) {
-              final chapter = state.currentChapter;
-              if (chapter == null) return;
+          body: MultiBlocListener(
+            listeners: [
+              // Auto-scroll on chapter change / paragraph transition.
+              BlocListener<ReaderBloc, ReaderState>(
+                listenWhen: (prev, curr) {
+                  if (prev.currentChapter?.id != curr.currentChapter?.id &&
+                      curr.currentChapter != null) {
+                    return true;
+                  }
+                  if (curr.isTtsActive &&
+                      prev.currentWordIndex != curr.currentWordIndex) {
+                    final prevPara = _findParagraphIndex(
+                        prev.currentWordIndex, _wordOffsets);
+                    final currPara = _findParagraphIndex(
+                        curr.currentWordIndex, _wordOffsets);
+                    if (currPara != prevPara) return true;
+                  }
+                  return false;
+                },
+                listener: (context, state) {
+                  final chapter = state.currentChapter;
+                  if (chapter == null) return;
 
-              if (chapter.id != _lastChapterId) {
-                _lastChapterId = chapter.id;
-                _lastScrolledParagraphIndex = -1;
-                final oldCtrl = _scrollController;
-                setState(() {
-                  _scrollController = ScrollController();
-                });
-                oldCtrl?.dispose();
-                return;
-              }
+                  if (chapter.id != _lastChapterId) {
+                    _lastChapterId = chapter.id;
+                    _lastScrolledParagraphIndex = -1;
+                    final oldCtrl = _scrollController;
+                    setState(() {
+                      _scrollController = ScrollController();
+                    });
+                    oldCtrl?.dispose();
+                    return;
+                  }
 
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                if (mounted) _scrollToParagraph(state.currentWordIndex);
-              });
-            },
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (mounted) _scrollToParagraph(state.currentWordIndex);
+                  });
+                },
+              ),
+              // Remote-progress arrival → "Continuando desde otro
+              // dispositivo" snackbar with an action to jump. The
+              // bloc only puts a `pendingRemoteProgress` into state if
+              // the event passed all filters (right book, not our own
+              // echo, not older than our last local save), so showing
+              // a banner whenever this field flips from null→set is
+              // the right trigger.
+              BlocListener<ReaderBloc, ReaderState>(
+                listenWhen: (prev, curr) =>
+                    prev.pendingRemoteProgress != curr.pendingRemoteProgress &&
+                    curr.pendingRemoteProgress != null,
+                listener: (context, state) {
+                  final pending = state.pendingRemoteProgress!;
+                  final bloc = context.read<ReaderBloc>();
+                  final messenger = ScaffoldMessenger.of(context);
+                  // Clear any older sync-snackbar so two devices
+                  // updating fast don't stack banners.
+                  messenger.clearSnackBars();
+                  // Auto-resolves to "dismissed" if the user does
+                  // nothing for 8 seconds — keeps a stale banner from
+                  // sitting forever.
+                  final controller = messenger.showSnackBar(
+                    SnackBar(
+                      duration: const Duration(seconds: 8),
+                      behavior: SnackBarBehavior.floating,
+                      content: Row(
+                        children: [
+                          const Icon(Icons.devices_rounded,
+                              size: 20, color: Colors.white),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              'Continuando desde otro dispositivo '
+                              '(palabra ${pending.wordIndex})',
+                            ),
+                          ),
+                        ],
+                      ),
+                      action: SnackBarAction(
+                        label: 'Ir allí',
+                        onPressed: () => bloc.add(
+                            const ReaderRemoteProgressAccepted()),
+                      ),
+                    ),
+                  );
+                  controller.closed.then((reason) {
+                    if (!bloc.isClosed &&
+                        reason != SnackBarClosedReason.action &&
+                        bloc.state.pendingRemoteProgress == pending) {
+                      bloc.add(const ReaderRemoteProgressDismissed());
+                    }
+                  });
+                },
+              ),
+            ],
             child: BlocConsumer<ReaderBloc, ReaderState>(
               listenWhen: (prev, curr) =>
                   curr.errorMessage != null && prev.errorMessage != curr.errorMessage,
