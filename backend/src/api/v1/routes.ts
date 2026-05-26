@@ -17,26 +17,9 @@ import { hashPassword, verifyPassword } from '../../core/password.js';
 import { createTtsProvider } from '../../core/tts/index.js';
 import { env } from '../../core/env.js';
 import { detectFormat, isSupportedFormat, parseBookFile } from '../../core/parsers/index.js';
-import { realtimeBus, type RealtimeEvent } from '../../core/realtime-bus.js';
 import { getDatabaseUnavailableReason, getDb } from '../../db/client.js';
 import { books, chapterAudio, chapters, readingProgress, users } from '../../db/schema.js';
 import { revokeToken, isTokenRevoked } from '../../core/token-revocation.js';
-
-/** Reads the originating device's clientId from headers. Clients should
- *  generate a stable UUID at first launch and resend it on every mutation.
- *  Used so the SSE push for a write can be tagged with its originator,
- *  letting that same device discard the echo instead of double-applying
- *  its own change. Missing/empty header is fine — the event just won't
- *  carry an originator and every connected device (including the writer)
- *  will treat it as fresh. */
-function readClientId(request: { headers: Record<string, unknown> }): string | undefined {
-  const raw = request.headers['x-client-id'];
-  if (typeof raw !== 'string') return undefined;
-  const trimmed = raw.trim();
-  if (!trimmed) return undefined;
-  // Cap the length so we don't store a 10MB blob as a clientId.
-  return trimmed.slice(0, 128);
-}
 
 const DB_ERROR_CODES = ['ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'ETIMEDOUT', '57P03', '08001', '08003', '08004', '08006', '08007'];
 
@@ -884,7 +867,6 @@ export async function registerV1Routes(app: FastifyInstance): Promise<void> {
  const percentage =
  totalWords > 0 ? Math.min((body.word_index / totalWords) * 100, 100) : 0;
 
- const lastReadAt = new Date();
  await db
  .insert(readingProgress)
  .values({
@@ -894,7 +876,7 @@ export async function registerV1Routes(app: FastifyInstance): Promise<void> {
  wordIndex: body.word_index,
  audioPositionMs: body.audio_position_ms,
  percentage,
- lastReadAt
+ lastReadAt: new Date()
  })
  .onConflictDoUpdate({
  target: [readingProgress.userId, readingProgress.bookId],
@@ -903,25 +885,7 @@ export async function registerV1Routes(app: FastifyInstance): Promise<void> {
  wordIndex: body.word_index,
  audioPositionMs: body.audio_position_ms,
  percentage,
- lastReadAt
- }
- });
-
- // Fan out to every other device the user has connected via SSE.
- // The originating clientId travels along so the writer's own SSE
- // listener can drop the echo instead of double-applying its own
- // write. lastReadAt acts as the server-authoritative timestamp the
- // peers use for last-write-wins reconciliation if two devices race.
- realtimeBus.publish(authUser.sub, {
- type: 'progress.updated',
- clientId: readClientId(request),
- data: {
- bookId: params.bookId,
- chapterId: body.chapter_id,
- wordIndex: body.word_index,
- audioPositionMs: body.audio_position_ms,
- percentage,
- lastReadAt: lastReadAt.toISOString()
+ lastReadAt: new Date()
  }
  });
 
@@ -953,78 +917,4 @@ export async function registerV1Routes(app: FastifyInstance): Promise<void> {
 		const stream = fs.createReadStream(filePath);
 		return reply.type('audio/mpeg').send(stream);
 	});
-
-	// ─────────────────────── REALTIME SYNC (SSE) ───────────────────────
-	//
-	// Long-lived Server-Sent Events stream per authenticated user.
-	// Clients open ONE connection at login and keep it open; the server
-	// fans out pub/sub events (progress updates, bookmark mutations) so
-	// device B is notified the instant device A writes. SSE was chosen
-	// over WebSocket because the channel is strictly server→client (no
-	// client messages) and SSE traverses HTTP proxies/CDNs without
-	// special handling.
-	//
-	// Heartbeat: a comment line (": ping\n\n") is written every 25 s to
-	// keep proxies (and Node's default socket timeout) from closing an
-	// otherwise-idle connection. Comments are ignored by EventSource.
-	app.get(
-		'/api/v1/sync/stream',
-		{ preHandler: requireAccessToken },
-		async (request, reply) => {
-			const authUser = getAuthenticatedUser(request);
-
-			// Bypass Fastify's content negotiation entirely — we own the
-			// raw socket from here on so the response body can stay open.
-			reply.raw.setHeader('Content-Type', 'text/event-stream');
-			reply.raw.setHeader('Cache-Control', 'no-cache, no-transform');
-			reply.raw.setHeader('Connection', 'keep-alive');
-			// Disable proxy buffering (NGINX honours this; others ignore).
-			reply.raw.setHeader('X-Accel-Buffering', 'no');
-			reply.raw.flushHeaders();
-
-			const write = (event: RealtimeEvent) => {
-				// Guard against the small race between unsubscribe and a
-				// publish on a different tick — a write after socket
-				// close would throw and crash the listener.
-				if (reply.raw.writableEnded) return;
-				const payload = JSON.stringify(event);
-				reply.raw.write(`event: ${event.type}\n`);
-				reply.raw.write(`data: ${payload}\n\n`);
-			};
-
-			// Welcome frame so clients can detect "connected" without
-			// waiting for the first business event. The non-standard
-			// `__welcome` flag lets the client ignore it instead of
-			// applying it as a real progress update.
-			write({
-				type: 'progress.updated',
-				ts: new Date().toISOString(),
-				data: { __welcome: true, userId: authUser.sub }
-			} as RealtimeEvent);
-
-			const unsubscribe = realtimeBus.subscribe(authUser.sub, write);
-
-			const heartbeat = setInterval(() => {
-				if (reply.raw.writableEnded) return;
-				try {
-					reply.raw.write(`: ping ${Date.now()}\n\n`);
-				} catch {
-					// Socket dead → cleanup fires from the close handler.
-				}
-			}, 25_000);
-			heartbeat.unref?.();
-
-			const cleanup = () => {
-				clearInterval(heartbeat);
-				unsubscribe();
-			};
-
-			request.raw.on('close', cleanup);
-			request.raw.on('error', cleanup);
-
-			// Returning the (still-open) reply tells Fastify we've
-			// hijacked the response — it must not send anything else.
-			return reply;
-		}
-	);
 }
