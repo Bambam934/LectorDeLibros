@@ -1,281 +1,89 @@
-# 🚀 Empezar con LectorSync — 5 minutos
+# Empezar con LectorSync
 
-## Bienvenido a LectorSync 🎧📚
+*Última actualización: 2026-07-16*
 
-Aplicación multiplataforma de lectura sincronizada con audio de alta calidad.
-
----
-
-## Primeros 5 minutos
-
-### 1. Clonar y abrir
-```bash
-git clone <LectorSync>
-cd LectorDeLibros
-claude              # Abre Claude Code
-```
-
-### 2. Probar las herramientas (1 minuto)
-```
-/plan help              ← Descomposición multi-agente
-/code-review help       ← Revisión inteligente
-/design help            ← UI profesional
-/mem-search help        ← Memoria del proyecto
-```
-
-### 3. Entender el proyecto (4 minutos)
-```bash
-# Lee esto primero
-cat lector_sync_project_definition.md | head -100
-
-# Luego esto
-cat .claude/docs/DECISIONS.md
-```
+App multiplataforma de lectura sincronizada con audio (TTS palabra-a-palabra) para Android, iOS, Web, Windows, macOS y Linux.
 
 ---
 
-## Primeros 2 días
+## Requisitos
 
-### Día 1: Setup y contexto
+- **Flutter** con Dart SDK `^3.11.5` (`flutter --version`).
+- **Node.js 22+** y npm.
+- **Docker** (para PostgreSQL local y el backend dockerizado).
 
-**Morning (30 min)**:
+## Arrancar en modo offline (lo más rápido)
+
+La app arranca **sin backend** por defecto (`OFFLINE_MODE=true`). Login acepta cualquier credencial; los libros (PDF/TXT/MD) se guardan en el dispositivo.
+
 ```bash
-# Lee estos archivos
-cat lector_sync_project_definition.md      # Visión general
-cat .claude/docs/GETTING-STARTED.md         # Este archivo
-cat .claude/README.md                       # Herramientas disponibles
+cd lectorsync
+flutter pub get
+flutter run -d chrome        # o -d windows, o un emulador/dispositivo
 ```
 
-**Midday (30 min)**:
-```
-/mem-search: Arquitectura general de LectorSync
-/mem-search: Motor de sincronización
-/mem-search: Stack tecnológico (Flutter, Node.js, PostgreSQL)
-```
+## Arrancar en modo conectado (con backend)
 
-**Afternoon (30 min)**:
 ```bash
-# Lee según tu rol:
+# 1. Backend + Postgres con Docker
+cd backend
+cp .env.example .env         # completa JWT_SECRET y DATABASE_URL
+docker compose up -d         # backend en :3000, Postgres en 127.0.0.1:5432
 
-# Si eres Flutter Dev:
-cat .claude/docs/FLUTTER-GUIDELINES.md
+# (alternativa sin Docker para el backend)
+npm install && npm run db:up && npm run dev
 
-# Si eres Backend Dev:
-cat .claude/docs/BACKEND-API.md
-
-# Si eres Designer:
-cat .claude/docs/DECISIONS.md | grep -i "design"
+# 2. App apuntando al backend
+cd ../lectorsync
+flutter run --dart-define=OFFLINE_MODE=false --dart-define=API_BASE_URL=http://localhost:3000
 ```
 
-### Día 2: Primer PR
+En Android emulado, el host es `http://10.0.2.2:3000`; en un dispositivo físico, la IP LAN de tu máquina.
 
-**Morning (1 hora)**:
-```
-/plan: Feature pequeña para aprender
-       Ej: Agregar logo en splash screen
-       Ej: Agregar campo en Settings
-```
+## Comandos de desarrollo
 
-**Afternoon (2 horas)**:
-Implementas el código...
-
-**Evening (1 hora)**:
-```
-/code-review: Mi código
-# Fix feedback
-
-git add . && git commit -m "feat: ..." && git push
+**Backend** (`cd backend`):
+```bash
+npm run dev        # Fastify con watch
+npm test           # suite (tsx --test) — 61 tests
+npm run typecheck  # tsc --noEmit
+npm run db:studio  # explorar la DB
 ```
 
----
+**Flutter** (`cd lectorsync`):
+```bash
+flutter analyze              # obligatorio antes de commit
+flutter test                 # unit + widget — 123 tests
+flutter build apk --release  # APK universal firmado
+flutter build web            # build web
+```
 
 ## Estructura del proyecto
 
 ```
 LectorDeLibros/
-├── .claude/                    ← Configuración compartida (tú estás aquí)
-│   ├── README.md              ← Resumen de herramientas
-│   ├── CLAUDE.md              ← Guía completa
-│   ├── settings.json          ← Config para todos
-│   └── docs/
-│       ├── GETTING-STARTED.md ← Este archivo
-│       ├── DECISIONS.md       ← Decisiones técnicas
-│       ├── FLUTTER-GUIDELINES.md
-│       ├── BACKEND-API.md
-│       └── ARCHITECTURE.md
-│
-├── lib/                        ← Código Flutter
-│   ├── presentation/           ← BLoCs, Pages, Widgets
-│   ├── domain/                 ← Entities, UseCases, Repositories
-│   └── data/                   ← DataSources, Models, Adapters
-│
-├── backend/                    ← Código Node.js
+├── .claude/
+│   ├── CLAUDE.md              ← contexto del proyecto
+│   ├── agents/
+│   │   └── lectorsync-expert.md   ← FUENTE DE VERDAD: arquitectura, reglas, aprendizajes
+│   └── docs/                  ← esta documentación
+├── backend/                   ← Fastify + Drizzle + PostgreSQL
 │   ├── src/
-│   ├── tests/
-│   └── package.json
-│
-└── lector_sync_project_definition.md  ← Blueprint completo del proyecto
+│   │   ├── api/v1/routes.ts   ← todos los endpoints
+│   │   ├── core/             ← auth, parsers, tts, realtime-bus, env
+│   │   └── db/               ← schema Drizzle + migraciones
+│   └── docker-compose.yml
+├── lectorsync/                ← app Flutter
+│   ├── lib/
+│   │   ├── core/             ← di, network, router, storage, sync, theme
+│   │   └── features/         ← auth, library, reader, settings (domain/data/presentation)
+│   └── test/
+└── lector_sync_project_definition.md   ← blueprint original
 ```
 
----
+## Dónde mirar primero
 
-## Comandos que usarás constantemente
-
-### Cuando empiezas una feature
-```
-/plan: Feature - [nombre con detalles]
-
-Ej: /plan: Feature - Soporte para múltiples voces por personaje
-           - NLP para detectar diálogos
-           - Adaptador para ElevenLabs, Azure, Google
-           - UI para seleccionar voz
-           - Tests de sincronización < 100ms
-           - Documentación OpenAPI
-```
-
-### Cuando necesitas revisar código
-```
-/code-review: Mi [componente/endpoint/función]
-
-Ej: /code-review: Mi SyncEngine BLoC
-/code-review: Mi endpoint de personalidades
-```
-
-### Cuando necesitas seguridad
-```
-/security: Mi [código/endpoint]
-
-Ej: /security: Mi autenticación JWT
-/security: Estoy guardando credenciales correctamente?
-```
-
-### Cuando necesitas diseño
-```
-/design: [descripción UI]
-
-Ej: /design: Reader interface para iOS con dark mode sensorial
-```
-
-### Cuando necesitas contexto
-```
-/mem-search: [qué buscas]
-
-Ej: /mem-search: Cómo implementaron el motor de sync
-/mem-search: Por qué usamos BLoC
-```
-
----
-
-## Tips importantes
-
-### ✅ DO
-- Usa `/plan` para features complejas (te ahorra horas)
-- Usa `/code-review` antes de cada PR (catch bugs)
-- Usa `/mem-search` para aprender del código anterior (reutiliza)
-- Usa `/design` para UI consistente (5 plataformas)
-
-### ❌ DON'T
-- No hagas PR sin `/code-review`
-- No olvides `/mem-search` — alguien ya lo hizo
-- No cambies arquitectura sin `/plan`
-- No repitas bugs — busca en memoria primero
-
----
-
-## Problemas comunes
-
-### "¿Cómo hago X en LectorSync?"
-```
-/mem-search: Cómo se implementa X en este proyecto
-```
-
-### "¿Estoy cumpliendo los estándares?"
-```
-/code-review: Mi código
-```
-
-### "¿Es seguro mi código?"
-```
-/code-review: Mi código
-/security: [si maneja datos sensibles]
-```
-
-### "¿Debo usar este patrón?"
-```
-/mem-search: Cómo manejamos [cosa similar]
-```
-
-### "¿Cómo agrego soporte para nueva plataforma?"
-```
-/mem-search: Cómo agregaron soporte para [plataforma]
-/plan: Feature - Soporte para [nueva plataforma]
-```
-
----
-
-## Roles en el equipo
-
-### 🎨 Flutter Developer (UI/UX en 5 plataformas)
-```
-Herramientas que usarás más:
-/design         → Componentes visuales consistentes
-/code-review    → BLoCs, Widgets, Providers
-/mem-search     → Cómo lo hicieron en otra plataforma
-
-Objetivo: IOS, Android, macOS, Windows, Linux en sync
-```
-
-### 🔧 Backend Developer (Node.js, API, DB)
-```
-Herramientas que usarás más:
-/plan           → Arquiteción de features
-/code-review    → Endpoints, middlewares, validación
-/security       → Autenticación, encriptación
-/mem-search     → Patrones de DB y API
-
-Objetivo: API rápida, segura, con sincronización < 100ms
-```
-
-### 🎵 Audio/Sync Engineer (Motor de sincronización)
-```
-Herramientas que usarás más:
-/plan           → Optimización de latencia
-/code-review    → Código de sync
-/mem-search     → Cómo optimizaron antes
-
-Objetivo: Latencia < 100ms en todas las plataformas
-```
-
-### 🎨 Designer (UI/UX)
-```
-Herramientas que usarás más:
-/design         → Interfaces para todas las plataformas
-/mem-search     → Decisiones de diseño previas
-/plan           → Refinamiento de flujos
-
-Objetivo: UX sensorial, accesible, en 5 plataformas
-```
-
-### 🧪 QA / DevOps
-```
-Herramientas que usarás más:
-/code-review    → Tests, CI/CD, coverage
-/security       → Vulnerabilidades antes de deploy
-/plan           → Estrategia de testing
-
-Objetivo: 80%+ cobertura, cero vulnerabilidades
-```
-
----
-
-## Siguiente paso
-
-1. ✓ Leíste esto
-2. ✓ Entiendes que hay 4 herramientas
-3. → **Abre Claude Code y corre**: `/plan help`
-
----
-
-**Bienvenido a LectorSync. El equipo usa herramientas inteligentes para desarrollar rápido en 5 plataformas.** 🚀
-
-*¿Listo? Empieza ahora con `/plan: Feature pequeña para aprender`*
+1. **`.claude/agents/lectorsync-expert.md`** — la referencia más densa y actual: reglas de arquitectura, restricciones críticas y aprendizajes de campo del TTS que no están en el código.
+2. **`.claude/docs/ARCHITECTURE.md`** — diagramas y flujos.
+3. **`.claude/docs/BACKEND-API.md`** — endpoints.
+4. **`.claude/docs/FLUTTER-GUIDELINES.md`** — convenciones de Dart/Flutter.

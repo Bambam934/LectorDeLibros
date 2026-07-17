@@ -1,6 +1,6 @@
 # Flutter Development Guidelines
 
-**Version:** 3.4+ / Dart 3+
+**Version:** Flutter 3 / Dart SDK ^3.11.5 · *Última actualización: 2026-07-16*
 
 ## Rules & Patterns
 

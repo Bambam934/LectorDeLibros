@@ -1,190 +1,43 @@
-# LectorSync - Auditoría de Seguridad
+# LectorSync — Postura de seguridad
 
-**Fecha**: 2026-05-09
-**Auditor**: Claude (análisis automático)
-**Versión del Proyecto**: 0.1.0
+*Última actualización: 2026-07-16*
 
----
+> Este documento reemplaza a la auditoría automática de 2026-05-09, que quedó obsoleta (reportaba como ALTAS vulnerabilidades ya remediadas). El detalle completo de las 14 vulnerabilidades y su remediación vive en la memoria del proyecto (`memory/security_audit_2026_05.md`).
 
-## Resumen Ejecutivo
+## Resumen
 
-El proyecto LectorSync implementa varias prácticas de seguridad sólidas como hashing de contraseñas con scrypt, tokens JWT con tiempo de expiración, y rate limiting. Sin embargo, se identificaron **3 vulnerabilidades de prioridad ALTA** que deben ser abordadas antes del despliegue en producción.
+Auditoría mayor: 2026-05-17 — **14 vulnerabilidades** (4 críticas, 5 altas, 3 medias, 2 bajas). Estado: **12 completamente remediadas**, 2 parciales, 1 aceptada con documentación. Revisión de seguimiento: 2026-07-16.
 
----
+## Controles vigentes (NO regresar)
 
-## Hallazgos de Seguridad
+- **Contraseñas**: `scrypt` + `timingSafeEqual` con salt por usuario (`core/password.ts`).
+- **JWT**: access 15 min + refresh 30 días, rotación en `/refresh`, revocación bidireccional verificada en cada request (`core/token-revocation.ts`).
+- **Auth fail-closed**: sin `DATABASE_URL` en prod → 503, no 500 con detalles.
+- **CORS**: deniega todo en prod si `CORS_ORIGINS` está vacío (`app.ts`).
+- **Rate-limit diferenciado**: auth 5/15 min, resto 100/1 min, por IP.
+- **Path traversal**: `voice_id` con regex `/^[a-zA-Z0-9_-]+$/` + `path.resolve` + `startsWith(AUDIO_DIR)`.
+- **Límites de import**: 500 capítulos, 5M palabras, 50 MB; validación por magic bytes.
+- **helmet**: CSP + HSTS en producción.
+- **Postgres**: expuesto solo en `127.0.0.1:5432` (no a la LAN).
+- **Parser EPUB**: DOCTYPE stripping contra XML bombs; sax bloquea XXE.
 
-### 🔴 ALTA - CORS Demasiado Permisivo
+## Pendientes conocidos
 
-**Ubicación**: `backend/src/app.ts:20-23`
+| ID | Tema | Estado | Nota |
+|---|---|---|---|
+| **SEC-01** | `JWT_SECRET` con default hardcoded en `docker-compose.yml` | 🔴 En remediación (2026-07-16) | Un `docker compose up` sin `.env` usa un secreto presente en el repo. Se está quitando el fallback para forzar configuración explícita. |
+| V-11 | Entity expansion en XML | 🟡 Parcial | sax bloquea XXE pero no toda expansión interna de entidades. |
+| V-05 | Backend en `0.0.0.0:3000` | 🟡 Intencional | Expuesto a la LAN a propósito para pruebas con dispositivo físico; endurecer antes de producción. |
+| V-10 | `localStorage`/IndexedDB en web para tokens | 🟢 Aceptado | Riesgo XSS documentado; recomendación BFF (httpOnly cookies) para producción. |
 
-```typescript
-await app.register(cors, {
-  origin: true,  // ❌ Permite cualquier origen
-  credentials: true
-});
-```
+## Antes de producción
 
-**Riesgo**: Un origen malicioso podría realizar solicitudes cross-site con credenciales del usuario.
+1. Cerrar SEC-01 (sin defaults de secretos).
+2. Rotar `JWT_SECRET` y `POSTGRES_PASSWORD` reales vía secrets del orquestador, nunca en el repo.
+3. Endurecer exposición del backend (reverse proxy/TLS; no `0.0.0.0` directo).
+4. Evaluar BFF para la web (V-10).
+5. Completar mitigación de entity expansion (V-11).
 
-**Recomendación**:
-```typescript
-// Producción: especificar orígenes exactos
-origin: process.env.NODE_ENV === 'production'
-  ? ['https://lectorsync.example.com']
-  : true
-```
+## Cómo auditar
 
----
-
-### 🟠 ALTA - Refresh Tokens No Revocados en Logout
-
-**Ubicación**: `backend/src/api/v1/routes.ts:233`
-
-```typescript
-// TODO: Revocar refresh tokens en base de datos.
-```
-
-**Riesgo**: Si un refresh token es robado, el atacante puede obtener acceso indefinidamente aunque el usuario haga logout.
-
-**Recomendación**:
-1. Crear tabla `refresh_token_revocations`
-2. Al logout, agregar token a lista de revocados
-3. Verificar revocación en cada refresh
-
----
-
-### 🟠 ALTA - JWT_SECRET con Valor por Defecto Débil
-
-**Ubicación**: `backend/src/core/env.ts:8`
-
-```typescript
-JWT_SECRET: z.string().min(8).default('lectorsync-dev-secret'),
-```
-
-**Riesgo**: En desarrollo, si no se configura JWT_SECRET, usa un valor conocido que podría ser usado en ataques.
-
-**Recomendación**:
-```typescript
-// En producción, rechazar el valor por defecto
-JWT_SECRET: z.string().min(32).refine(
-  (val) => val !== 'lectorsync-dev-secret' || process.env.NODE_ENV === 'development',
-  { message: 'JWT_SECRET must be changed in production' }
-)
-```
-
----
-
-### 🟡 MEDIA - Sin Validación MIME Estricta en Uploads
-
-**Ubicación**: `backend/src/api/v1/routes.ts` (import endpoint)
-
-**Riesgo**: Un usuario podría subir archivos maliciosos disfrazados con extensión .epub.
-
-**Recomendación**:
-```typescript
-const ALLOWED_MIMES = {
-  'application/epub+zip': '.epub',
-  'application/pdf': '.pdf',
-  'text/plain': ['.txt', '.md']
-};
-// Verificar magic bytes del archivo, no solo extensión
-```
-
----
-
-### 🟡 MEDIA - Sin Rate Limiting por IP en Rutas de Auth
-
-**Riesgo**: Ataques de fuerza bruta en `/auth/login` podrían pasar desapercibidos.
-
-**Recomendación**:
-```typescript
-// Agregar rate limit específico para auth
-await app.register(authRateLimit, {
-  max: 5,
-  timeWindow: '15 minute',
-  keyGenerator: (req) => req.ip
-});
-```
-
----
-
-### 🟡 MEDIA - Falta de Headers de Seguridad
-
-**Riesgo**: Missing headers como CSP, HSTS, X-Frame-Options exponen a clickjacking y XSS.
-
-**Recomendación**:
-```typescript
-import helmet from '@fastify/helmet';
-await app.register(helmet, {
-  contentSecurityPolicy: true,
-  hsts: { maxAge: 31536000, includeSubDomains: true }
-});
-```
-
----
-
-### 🟢 BAJA - No Hay Logs de Intentos de Login Fallidos
-
-**Riesgo**: No hay auditoría para detectar ataques de credential stuffing.
-
-**Recomendación**: Implementar logging estructurado de autenticación.
-
----
-
-### 🟢 BAJA - Almacenamiento Local de Archivos
-
-**Ubicación**: `backend/src/app.ts:36-40`
-
-```typescript
-await app.register(staticPlugin, {
-  root: AUDIO_DIR,
-  prefix: '/audio/'
-});
-```
-
-**Riesgo**: Los archivos de audio almacenados localmente no son adecuados para producción horizontalmente escalable.
-
-**Recomendación**: Usar S3 o similar para producción.
-
----
-
-## Lo Que Está Bien ✅
-
-| Característica | Implementación |
-|----------------|----------------|
-| Password Hashing | scrypt con salt aleatorio (memory-hard) |
-| Tokens JWT | Access token 15min, Refresh 30d |
-| Rate Limiting | 100 req/min configurado |
-| Validación Input | Zod schemas exhaustivos |
-| Ownership Check | Verificación de usuario en libros |
-| Secure Storage | flutter_secure_storage en móvil |
-| .env en .gitignore | Secrets no se suben al repo |
-
----
-
-## Checklist de Despliegue Seguro
-
-- [ ] Cambiar `JWT_SECRET` por valor único de 32+ caracteres
-- [ ] Configurar CORS con orígenes específicos
-- [ ] Usar PostgreSQL con SSL
-- [ ] Implementar revocación de refresh tokens
-- [ ] Agregar `@fastify/helmet` para headers de seguridad
-- [ ] Configurar rate limiting más estricto en auth
-- [ ] Implementar logging de autenticación
-- [ ] Usar HTTPS en producción
-- [ ] Considerar almacenamiento cloud (S3) para archivos
-
----
-
-## Dependencias con Vulnerabilidades Conocidas
-
-Verificar periódicamente con:
-```bash
-npm audit                  # Backend
-flutter pub outdated       # Frontend
-```
-
----
-
-*Este documento debe actualizarse después de cada sprint de seguridad.*
+Usar el comando global `/seguridad` (revisión defensiva priorizada con evidencia `archivo:línea`). No confiar en documentos congelados: la fuente de verdad es el código + esta tabla + la memoria.
