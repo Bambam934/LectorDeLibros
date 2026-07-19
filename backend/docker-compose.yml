@@ -7,6 +7,8 @@ services:
       POSTGRES_USER: lectorsync_app
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_use_docker_secrets_in_prod}
     ports:
+      # 127.0.0.1: la DB solo es accesible desde el host por seguridad.
+      # El backend la alcanza por la red interna de Docker (hostname: postgres).
       - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -15,6 +17,40 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      - lectorsync_net
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lectorsync-backend
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HOST: 0.0.0.0
+      # Importante: usa el hostname 'postgres' (no 127.0.0.1) — es el nombre
+      # del servicio en la red interna de Docker.
+      DATABASE_URL: postgresql://lectorsync_app:${POSTGRES_PASSWORD:-changeme_use_docker_secrets_in_prod}@postgres:5432/lectorsync
+      JWT_SECRET: ${JWT_SECRET:-7b3f4c7470a4f8ccb04bdff1a9e7323b6425bfe9c5a3dc5a945c53185513122e4b296cb4b424220dc8fc0aa61cc46b1974ce710d4aff826f29dd73be545839a8}
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-100}
+      RATE_LIMIT_WINDOW: ${RATE_LIMIT_WINDOW:-1 minute}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      NVIDIA_API_BASE_URL: ${NVIDIA_API_BASE_URL:-https://integrate.api.nvidia.com/v1}
+      ELEVENLABS_DEFAULT_VOICE_ID: ${ELEVENLABS_DEFAULT_VOICE_ID:-}
+    ports:
+      # 0.0.0.0:3000 — expuesto a la LAN para que el celular pueda conectarse.
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - lectorsync_net
 
 volumes:
   postgres_data:
+
+networks:
+  lectorsync_net:
+    driver: bridge
