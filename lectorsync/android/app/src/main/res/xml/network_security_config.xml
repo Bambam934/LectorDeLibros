@@ -8,4 +8,14 @@
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="false">localhost</domain>
     </domain-config>
+    <!-- DEV: backend Node.js en la red local (PC del desarrollador) -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">192.168.0.7</domain>
+    </domain-config>
+    <!-- DEV: permite cualquier IP privada de la LAN para pruebas en celulares -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
 </network-security-config>
