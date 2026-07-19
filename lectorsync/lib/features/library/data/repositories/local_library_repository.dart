@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../../core/errors/failures.dart';
+import '../../../../core/storage/local_book_store.dart';
 import '../../domain/entities/book.dart';
 import '../../domain/repositories/library_repository.dart';
 
@@ -20,7 +21,7 @@ import '../../domain/repositories/library_repository.dart';
 /// Diseñado para funcionar sin backend mientras LectorSync esté en
 /// desarrollo. Cuando exista un servidor desplegado, esta implementación
 /// puede coexistir con [RemoteLibraryRepository] detrás de un toggle.
-class LocalLibraryRepository implements LibraryRepository {
+class LocalLibraryRepository implements LibraryRepository, LocalBookStore {
   LocalLibraryRepository({Uuid? uuid}) : _uuid = uuid ?? const Uuid();
 
   static const _prefsKey = 'local_library_books_v1';
@@ -110,7 +111,8 @@ class LocalLibraryRepository implements LibraryRepository {
   }
 
   /// Devuelve la ruta absoluta del archivo de un libro persistido.
-  /// Usado por [LocalReaderRepository] para abrir el contenido.
+  /// Usado por el lector offline para abrir el contenido.
+  @override
   Future<String?> resolveStoredPath(String bookId) async {
     final entries = await _readRawEntries();
     for (final e in entries) {
@@ -120,8 +122,9 @@ class LocalLibraryRepository implements LibraryRepository {
   }
 
   /// Actualiza el progreso y/o chapter count en el catálogo local.
-  /// Llamado por [LocalReaderRepository] cuando se descubren capítulos
+  /// Llamado por el lector offline cuando se descubren capítulos
   /// o se guarda progreso de lectura.
+  @override
   Future<void> updateBookProgress({
     required String bookId,
     int? totalChapters,

@@ -5,14 +5,14 @@ import 'package:fpdart/fpdart.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
 
 import '../../../../core/errors/failures.dart';
-import '../../../library/data/repositories/local_library_repository.dart';
+import '../../../../core/storage/local_book_store.dart';
 import '../../domain/entities/chapter.dart';
 import '../../domain/entities/chapter_audio.dart';
 import '../../domain/repositories/reader_repository.dart';
 
 /// Offline-first reader repository.
 ///
-/// Lee los archivos persistidos por [LocalLibraryRepository] y los parsea
+/// Lee los archivos persistidos por el store local y los parsea
 /// en capítulos según el formato:
 ///
 /// - **PDF**: usa Syncfusion PdfTextExtractor para extraer texto y lo
@@ -30,10 +30,10 @@ import '../../domain/repositories/reader_repository.dart';
 /// offline usa el TTS del dispositivo (DeviceTtsRepository) que solo
 /// necesita el texto del capítulo.
 class LocalReaderRepository implements ReaderRepository {
-  LocalReaderRepository({required LocalLibraryRepository library})
-      : _library = library;
+  LocalReaderRepository({required LocalBookStore store})
+      : _store = store;
 
-  final LocalLibraryRepository _library;
+  final LocalBookStore _store;
 
   // Tamaño objetivo de cada capítulo cuando no hay estructura natural.
   static const _targetWordsPerChapter = 3000;
@@ -113,7 +113,7 @@ class LocalReaderRepository implements ReaderRepository {
           ? 0.0
           : ((wordsBefore + wordIndex) / totalWords).clamp(0.0, 1.0);
 
-      await _library.updateBookProgress(
+      await _store.updateBookProgress(
         bookId: bookId,
         progress: progress,
         progressChapterId: chapterId,
@@ -149,7 +149,7 @@ class LocalReaderRepository implements ReaderRepository {
     if (cached != null) return cached;
 
     // 2) Cache en disco.
-    final storedPath = await _library.resolveStoredPath(bookId);
+    final storedPath = await _store.resolveStoredPath(bookId);
     if (storedPath == null) {
       throw _ReaderError(FileFailure(
         'Archivo del libro no encontrado en el dispositivo.',
@@ -218,7 +218,7 @@ class LocalReaderRepository implements ReaderRepository {
       jsonEncode(chapters.map(_chapterToJson).toList(growable: false)),
       flush: true,
     );
-    await _library.updateBookProgress(
+    await _store.updateBookProgress(
       bookId: bookId,
       totalChapters: chapters.length,
       totalWords: chapters.fold<int>(0, (sum, c) => sum + c.wordCount),

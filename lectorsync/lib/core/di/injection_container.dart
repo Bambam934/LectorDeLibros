@@ -200,24 +200,29 @@ Future<void> configureDependencies() async {
   // Features - Library
   // Modo offline: LocalLibraryRepository persiste libros importados en el
   // sandbox de la app (path_provider) + catálogo en SharedPreferences.
+  // En modo offline registramos UNA instancia de LocalLibraryRepository y la
+  // exponemos por sus dos contratos: LibraryRepository (biblioteca) y
+  // LocalBookStore (acceso al archivo local que usa el lector). Así el lector
+  // depende de la abstracción, no de la clase concreta, y no hace falta cast.
+  if (_kOfflineMode && !sl.isRegistered<LocalLibraryRepository>()) {
+    sl.registerLazySingleton<LocalLibraryRepository>(LocalLibraryRepository.new);
+  }
   if (!sl.isRegistered<LibraryRepository>()) {
     sl.registerLazySingleton<LibraryRepository>(
       () => _kOfflineMode
-          ? LocalLibraryRepository()
+          ? sl<LocalLibraryRepository>()
           : RemoteLibraryRepository(apiClient: sl()),
     );
   }
 
   // Features - Reader
   // Modo offline: LocalReaderRepository parsea PDF/TXT/MD desde el archivo
-  // local y cachea los capítulos. Requiere que LibraryRepository sea Local
-  // para poder resolver el path del archivo.
+  // local y cachea los capítulos. Recibe el LocalBookStore para resolver el
+  // path del archivo y actualizar la metadata del catálogo.
   if (!sl.isRegistered<ReaderRepository>()) {
     sl.registerLazySingleton<ReaderRepository>(
       () => _kOfflineMode
-          ? LocalReaderRepository(
-              library: sl<LibraryRepository>() as LocalLibraryRepository,
-            )
+          ? LocalReaderRepository(store: sl<LocalLibraryRepository>())
           : RemoteReaderRepository(apiClient: sl()),
     );
   }
