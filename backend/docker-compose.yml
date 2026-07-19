@@ -5,7 +5,7 @@ services:
     environment:
       POSTGRES_DB: lectorsync
       POSTGRES_USER: lectorsync_app
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_use_docker_secrets_in_prod}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?define POSTGRES_PASSWORD en .env antes de levantar}
     ports:
       # 127.0.0.1: la DB solo es accesible desde el host por seguridad.
       # El backend la alcanza por la red interna de Docker (hostname: postgres).
@@ -31,8 +31,8 @@ services:
       HOST: 0.0.0.0
       # Importante: usa el hostname 'postgres' (no 127.0.0.1) — es el nombre
       # del servicio en la red interna de Docker.
-      DATABASE_URL: postgresql://lectorsync_app:${POSTGRES_PASSWORD:-changeme_use_docker_secrets_in_prod}@postgres:5432/lectorsync
-      JWT_SECRET: ${JWT_SECRET:-7b3f4c7470a4f8ccb04bdff1a9e7323b6425bfe9c5a3dc5a945c53185513122e4b296cb4b424220dc8fc0aa61cc46b1974ce710d4aff826f29dd73be545839a8}
+      DATABASE_URL: postgresql://lectorsync_app:${POSTGRES_PASSWORD:?define POSTGRES_PASSWORD en .env antes de levantar}@postgres:5432/lectorsync
+      JWT_SECRET: ${JWT_SECRET:?define JWT_SECRET en .env (min 32 chars) antes de levantar}
       RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-100}
       RATE_LIMIT_WINDOW: ${RATE_LIMIT_WINDOW:-1 minute}
       NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
