@@ -69,7 +69,7 @@ class RemoteAuthRepository implements AuthRepository {
     try {
       final refreshToken = await _storage.getRefreshToken();
       await _dio.post('/api/v1/auth/logout', data: {
-        if (refreshToken != null) 'refresh_token': refreshToken,
+        'refresh_token': ?refreshToken,
       });
     } catch (_) {
     } finally {

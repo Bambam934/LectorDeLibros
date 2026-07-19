@@ -1,7 +1,6 @@
 import type { BookParser, ParsedBook, ParsedChapter } from './types.js';
-import { countWords } from './types.js';
+import { countWords, MAX_WORDS_PER_CHAPTER } from './types.js';
 
-const MAX_WORDS_PER_CHAPTER = 5000;
 const HEADING_RE = /^(?:(?:Capítulo|Chapter|CAPÍTULO|CHAPTER)\s+\S+.*|(?:PARTE|PART)\s+[IVXLCDM\d]+.*)$/im;
 
 export class PdfParser implements BookParser {

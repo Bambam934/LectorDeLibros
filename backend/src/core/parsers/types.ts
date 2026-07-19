@@ -22,3 +22,6 @@ export type BookParser = {
 export function countWords(text: string): number {
   return text.trim().split(/\s+/).filter(Boolean).length;
 }
+
+/** Tamaño objetivo de capítulo al dividir por conteo de palabras (formatos sin estructura). */
+export const MAX_WORDS_PER_CHAPTER = 5000;

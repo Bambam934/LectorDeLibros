@@ -1,9 +1,8 @@
 import type { BookParser, ParsedBook, ParsedChapter } from './types.js';
-import { countWords } from './types.js';
+import { countWords, MAX_WORDS_PER_CHAPTER } from './types.js';
 
 const HEADING_RE = /^(?:#{1,6}\s+.+|(?:Capítulo|Chapter|CAPÍTULO|CHAPTER)\s+\S+.*|(?:PARTE|PART)\s+[IVXLCDM\d]+.*)$/im;
 const SEPARATOR_RE = /^\s*(?:\*{3,}|-{3,}|_{3,})\s*$/;
-const MAX_WORDS_PER_CHAPTER = 5000;
 const ENCODING_FALLBACK = 'latin1';
 
 const CHAPTER_HEADING_RE = /^(?:#{1,6}\s+(.+)|((?:Capítulo|Chapter|CAPÍTULO|CHAPTER)\s+\S+.*|(?:PARTE|PART)\s+[IVXLCDM\d]+.*))$/im;
