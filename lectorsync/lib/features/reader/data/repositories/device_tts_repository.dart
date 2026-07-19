@@ -10,9 +10,15 @@ import 'tts/desktop_tts_adapter.dart';
 import 'tts/language_detector.dart';
 import 'tts/native_mobile_tts_adapter.dart';
 import 'tts/segment_progress_tracker.dart';
+import 'tts/speak_segment.dart';
 import 'tts/tts_adapter.dart';
 import 'tts/tts_capabilities.dart';
+import 'tts/tts_segmentation.dart' as seg;
 import 'tts/web_tts_adapter.dart';
+
+// SpeakSegment y la segmentación pura se extrajeron a tts/ (2026-07-19).
+// El tipo se re-exporta para no romper a quien lo importa desde aquí.
+export 'tts/speak_segment.dart' show SpeakSegment;
 
 class DeviceTtsRepository implements TtsRepository {
   DeviceTtsRepository() : _adapter = _createAdapter();
@@ -52,7 +58,7 @@ class DeviceTtsRepository implements TtsRepository {
   List<SpeakSegment> _pendingSegments = [];
   int _currentSegmentIndex = 0;
   bool _isSegmentSpeaking = false;
-  static const int _maxWordsPerSegment = 200;
+  static const int _maxWordsPerSegment = seg.kMaxWordsPerSegment;
 
   SegmentProgressTracker? _segmentTracker;
   double? _calibratedMsPerChar;
@@ -81,7 +87,7 @@ class DeviceTtsRepository implements TtsRepository {
   /// pending word index and produce a visual jump).
   bool _recoveryPending = false;
   int _segmentRetryCount = 0;
-  static const int _maxSegmentRetries = 2;
+  static const int _maxSegmentRetries = seg.kMaxSegmentRetries;
 
   /// Local word index inside the current segment, last reported by either
   /// the real progress handler or the estimated tracker. Used to slice
@@ -1081,162 +1087,29 @@ class DeviceTtsRepository implements TtsRepository {
     }
   }
 
-  static final digitRegex = RegExp(r'\d+');
+  // La segmentación pura se extrajo a `tts/tts_segmentation.dart`
+  // (2026-07-19). Estos miembros estáticos delegan para no romper a sus
+  // llamadores, que la usan vía DeviceTtsRepository (los tests incluidos).
+  static final digitRegex = seg.digitRegex;
 
-  static const numberExpansionFactor = 4;
+  static const numberExpansionFactor = seg.numberExpansionFactor;
 
-  static const numberExpansionDict = <String, String>{
-    '28': 'veintiocho',
-    '1967': 'mil novecientos sesenta y siete',
-    '1': 'uno',
-    '2': 'dos',
-    '3': 'tres',
-    '4': 'cuatro',
-    '5': 'cinco',
-    '6': 'seis',
-    '7': 'siete',
-    '8': 'ocho',
-    '9': 'nueve',
-    '10': 'diez',
-    '11': 'once',
-    '12': 'doce',
-    '13': 'trece',
-    '14': 'catorce',
-    '15': 'quince',
-    '16': 'dieciséis',
-    '17': 'diecisiete',
-    '18': 'dieciocho',
-    '19': 'diecinueve',
-    '20': 'veinte',
-    '30': 'treinta',
-    '40': 'cuarenta',
-    '50': 'cincuenta',
-    '60': 'sesenta',
-    '70': 'setenta',
-    '80': 'ochenta',
-    '90': 'noventa',
-    '100': 'cien',
-    '200': 'doscientos',
-    '500': 'quinientos',
-    '1000': 'mil',
-  };
+  static const numberExpansionDict = seg.numberExpansionDict;
 
-  static int computeAudibleCharCount(String text) {
-    var count = 0;
-    var cursor = 0;
-    while (cursor < text.length) {
-      final match = digitRegex.matchAsPrefix(text, cursor);
-      if (match != null) {
-        final numStr = match.group(0)!;
-        final expanded = numberExpansionDict[numStr];
-        count += expanded != null ? expanded.length : numStr.length * numberExpansionFactor;
-        cursor = match.end;
-      } else {
-        count++;
-        cursor++;
-      }
-    }
-    return count;
-  }
+  static int computeAudibleCharCount(String text) =>
+      seg.computeAudibleCharCount(text);
 
-  static bool detectNumbers(String text) => digitRegex.hasMatch(text);
+  static bool detectNumbers(String text) => seg.detectNumbers(text);
 
-  /// Splits words into segments of up to [maxWords] words, preserving the
-  /// original text alignment.  Exposed as a static method so unit tests
-  /// can validate the splitting without standing up the full pipeline.
+  /// Segmentación base por conteo de palabras. La implementación vive en
+  /// `tts/tts_segmentation.dart`; aquí se delega por compatibilidad.
   static List<SpeakSegment> splitIntoSegments(
     String text,
     List<String> words,
     int globalStartIndex, {
     int maxWords = _maxWordsPerSegment,
-  }) {
-    if (words.length <= maxWords) {
-      final segText = text.isEmpty ? words.join(' ') : text;
-      return [
-        SpeakSegment(
-          text: segText,
-          words: words,
-          globalStartWordIndex: globalStartIndex,
-          audibleCharCount: computeAudibleCharCount(segText),
-          hasNumbers: detectNumbers(segText),
-        ),
-      ];
-    }
-
-    // FIX — pre-compute char positions for EVERY word using sequential
-    // cursor-based indexOf.  The previous code searched only for the
-    // segment's *last* word with `text.indexOf(lastWord, charCursor)`,
-    // which performs a **substring** match.  For common Spanish words
-    // like "de", this found "de" inside "del" at position 0, truncating
-    // the segment text to 2 chars for 200 words.  The resulting
-    // text/words mismatch caused `_buildCharOffsets` to map most words
-    // to the same offset, making `_binarySearch` return erratic indices
-    // (the "se salta varios párrafos" highlight jump to a paragraph
-    // with identical text).
-    final wordCharPositions = <int>[];
-    final wordCharEnds = <int>[];
-    {
-      int cursor = 0;
-      for (final w in words) {
-        final idx = text.indexOf(w, cursor);
-        if (idx >= 0) {
-          wordCharPositions.add(idx);
-          wordCharEnds.add(idx + w.length);
-          cursor = idx + w.length;
-        } else {
-          // Word not found — anchor it at cursor so subsequent words
-          // still search from the right position.
-          wordCharPositions.add(cursor);
-          wordCharEnds.add(cursor);
-        }
-      }
-    }
-
-    final segments = <SpeakSegment>[];
-    int wordCursor = 0;
-
-    while (wordCursor < words.length) {
-      final endWord =
-          (wordCursor + maxWords).clamp(0, words.length);
-      final segmentWords = words.sublist(wordCursor, endWord);
-
-      String segmentText;
-      if (text.isNotEmpty) {
-        final charStart = wordCharPositions[wordCursor];
-        final charEnd = wordCharEnds[endWord - 1];
-
-        if (charStart < text.length && charEnd > charStart) {
-          segmentText = text.substring(charStart, charEnd);
-        } else {
-          segmentText = segmentWords.join(' ');
-        }
-      } else {
-        segmentText = segmentWords.join(' ');
-      }
-
-      // Defensive: log if the segment text is suspiciously short
-      // relative to its word count (would mean a mapping problem).
-      assert(
-        segmentText.length >= segmentWords.length ||
-            segmentWords.isEmpty,
-        '[_splitIntoSegments] segment text too short: '
-        '${segmentText.length} chars for ${segmentWords.length} words',
-      );
-
-      segments.add(
-        SpeakSegment(
-          text: segmentText,
-          words: segmentWords,
-          globalStartWordIndex: globalStartIndex + wordCursor,
-          audibleCharCount: computeAudibleCharCount(segmentText),
-          hasNumbers: detectNumbers(segmentText),
-        ),
-      );
-      wordCursor = endWord;
-    }
-
-    return segments;
-  }
+  }) =>
+      seg.splitIntoSegments(text, words, globalStartIndex, maxWords: maxWords);
 
   /// FIX 78 (session 16) — Sentence-aligned segmentation.
   ///
@@ -1278,111 +1151,9 @@ class DeviceTtsRepository implements TtsRepository {
     List<String> words,
     int globalStartIndex, {
     int minMergeChars = 30,
-  }) {
-    if (text.isEmpty || words.isEmpty) {
-      return splitIntoSegments(text, words, globalStartIndex);
-    }
-
-    // Map each word to its char span in `text` (sequential cursor-based
-    // search, same logic as splitIntoSegments to avoid 'de' inside 'del'
-    // false positives).
-    final wordCharStart = <int>[];
-    final wordCharEnd = <int>[];
-    {
-      int cursor = 0;
-      for (final w in words) {
-        final idx = text.indexOf(w, cursor);
-        if (idx >= 0) {
-          wordCharStart.add(idx);
-          wordCharEnd.add(idx + w.length);
-          cursor = idx + w.length;
-        } else {
-          wordCharStart.add(cursor);
-          wordCharEnd.add(cursor);
-        }
-      }
-    }
-
-    // Sentence boundary = run of `.!?;` followed by whitespace or EOS.
-    // We deliberately do NOT split on `,` or `:` here — the pauses
-    // those introduce are short (~100 ms) and well within the tracker's
-    // tolerance, while splitting on them would produce many tiny
-    // segments and force the engine into staccato output.
-    final boundaryRegex = RegExp(r'[\.!?;]+(?=\s|$)');
-
-    final boundaries = <int>[];
-    for (final m in boundaryRegex.allMatches(text)) {
-      boundaries.add(m.end);
-    }
-    if (boundaries.isEmpty || boundaries.last < text.length) {
-      boundaries.add(text.length);
-    }
-
-    final raw = <SpeakSegment>[];
-    int charCursor = 0;
-    int wordCursor = 0;
-
-    for (final boundaryEnd in boundaries) {
-      // Walk forward through words whose char start lies before the
-      // boundary; those belong to this sentence.
-      int wEnd = wordCursor;
-      while (wEnd < words.length && wordCharStart[wEnd] < boundaryEnd) {
-        wEnd++;
-      }
-      if (wEnd == wordCursor) {
-        // Boundary fell BEFORE the next unconsumed word (e.g. leading
-        // whitespace, repeated punctuation). Skip the char range and
-        // keep going so we don't emit an empty segment.
-        charCursor = boundaryEnd;
-        continue;
-      }
-      final segText = text.substring(charCursor, boundaryEnd).trim();
-      final segWords = words.sublist(wordCursor, wEnd);
-      if (segText.isNotEmpty && segWords.isNotEmpty) {
-        raw.add(SpeakSegment(
-          text: segText,
-          words: segWords,
-          globalStartWordIndex: globalStartIndex + wordCursor,
-          audibleCharCount: computeAudibleCharCount(segText),
-          hasNumbers: detectNumbers(segText),
-        ));
-      }
-      wordCursor = wEnd;
-      charCursor = boundaryEnd;
-    }
-
-    if (raw.isEmpty) {
-      return splitIntoSegments(text, words, globalStartIndex);
-    }
-
-    // Merge fragments shorter than `minMergeChars` with the next
-    // segment. Avoids choppy "Sí." / "¿Eh?" utterances that produce
-    // disproportionate engine latency.
-    final merged = <SpeakSegment>[];
-    SpeakSegment? buffer;
-    for (final seg in raw) {
-      if (buffer == null) {
-        buffer = seg;
-        continue;
-      }
-      if (buffer.text.length < minMergeChars) {
-        final mergedText = '${buffer.text} ${seg.text}';
-        final mergedWords = <String>[...buffer.words, ...seg.words];
-        buffer = SpeakSegment(
-          text: mergedText,
-          words: mergedWords,
-          globalStartWordIndex: buffer.globalStartWordIndex,
-          audibleCharCount: computeAudibleCharCount(mergedText),
-          hasNumbers: buffer.hasNumbers || seg.hasNumbers,
-        );
-      } else {
-        merged.add(buffer);
-        buffer = seg;
-      }
-    }
-    if (buffer != null) merged.add(buffer);
-    return merged;
-  }
+  }) =>
+      seg.splitIntoSentences(text, words, globalStartIndex,
+          minMergeChars: minMergeChars);
 
   /// FIX 32 — Hard cap on per-utterance characters.
   ///
@@ -1399,12 +1170,8 @@ class DeviceTtsRepository implements TtsRepository {
   /// ranges so the highlight follower keeps working.
   /// True iff the given engine error message indicates an
   /// "interrupted"-class failure (Web Speech overflow, native cancel).
-  static bool _isInterruptedMessage(Object? msg) {
-    final s = msg?.toString() ?? '';
-    if (s.isEmpty) return false;
-    if (s == 'interrupted') return true;
-    return s.toLowerCase().contains('interrupt');
-  }
+  static bool _isInterruptedMessage(Object? msg) =>
+      seg.isInterruptedMessage(msg);
 
   /// FIX 33 — Pure predicate exposing the auto-recovery decision so unit
   /// tests can validate the branching without a live FlutterTts engine.
@@ -1419,130 +1186,21 @@ class DeviceTtsRepository implements TtsRepository {
     required bool userRequestedStop,
     required int retryCount,
     int maxRetries = _maxSegmentRetries,
-  }) {
-    if (!_isInterruptedMessage(errorMessage)) return false;
-    if (userRequestedStop) return false;
-    if (retryCount >= maxRetries) return false;
-    return true;
-  }
+  }) =>
+      seg.shouldAutoRecover(
+        errorMessage: errorMessage,
+        userRequestedStop: userRequestedStop,
+        retryCount: retryCount,
+        maxRetries: maxRetries,
+      );
 
   /// Public entry point so tests can validate the splitting behaviour
   /// without standing up the whole pipeline.
   static List<SpeakSegment> enforceMaxSegmentLength(
     List<SpeakSegment> segments,
     int maxChars,
-  ) {
-    if (maxChars <= 0) return segments;
-    final result = <SpeakSegment>[];
-    for (final seg in segments) {
-      if (seg.text.length <= maxChars) {
-        result.add(seg);
-        continue;
-      }
-
-      // Build word offsets in the original text.
-      final wordOffsets = <int>[];
-      int cursor = 0;
-      for (final w in seg.words) {
-        final idx = seg.text.indexOf(w, cursor);
-        if (idx >= 0) {
-          wordOffsets.add(idx);
-          cursor = idx + w.length;
-        } else {
-          wordOffsets.add(cursor);
-        }
-      }
-
-      int charCursor = 0;
-      int wordCursor = 0;
-
-      while (charCursor < seg.text.length) {
-        final remaining = seg.text.length - charCursor;
-        int chunkEnd;
-        if (remaining <= maxChars) {
-          chunkEnd = seg.text.length;
-        } else {
-          final hardLimit = charCursor + maxChars;
-
-          // FIX: search up to `hardLimit - 1` so that `breakAt + 1`
-          // (which includes the punctuation/space char) is guaranteed
-          // to be `<= hardLimit`. Without this clamp, a comma sitting
-          // exactly at `hardLimit` produced a chunk of length
-          // `maxChars + 1` and the per-utterance cap was silently
-          // exceeded by 1 char (Chrome interrupted at 181 chars on a
-          // 180-char cap).
-          final searchLimit = hardLimit - 1;
-
-          // 1) last comma before hardLimit
-          var breakAt = seg.text.lastIndexOf(',', searchLimit);
-          if (breakAt <= charCursor) breakAt = -1;
-
-          // 2) fallback: last space before hardLimit
-          if (breakAt < 0) {
-            breakAt = seg.text.lastIndexOf(' ', searchLimit);
-            if (breakAt <= charCursor) breakAt = -1;
-          }
-
-          // 3) hard cut at maxChars
-          if (breakAt < 0) {
-            chunkEnd = hardLimit;
-          } else {
-            chunkEnd = breakAt + 1; // include the comma/space char
-          }
-        }
-
-        // Determine the word range for this chunk.
-        int chunkStartWord;
-        int chunkEndWord;
-        if (wordCursor >= seg.words.length) {
-          // We exhausted the word list (e.g. very long un-spaced word
-          // that spans multiple chunks). Attach the trailing chunks to
-          // the final word so the highlight follower stays put.
-          if (seg.words.isEmpty) {
-            chunkStartWord = 0;
-            chunkEndWord = 0;
-          } else {
-            chunkStartWord = seg.words.length - 1;
-            chunkEndWord = seg.words.length;
-          }
-        } else {
-          chunkStartWord = wordCursor;
-          var advanced = wordCursor;
-          while (advanced < seg.words.length &&
-              wordOffsets[advanced] < chunkEnd) {
-            advanced++;
-          }
-          if (advanced == chunkStartWord) {
-            // Force-include at least one word so we never produce a
-            // chunk with zero words (which would make the follower lose
-            // the highlight).
-            advanced = chunkStartWord + 1;
-          }
-          chunkEndWord = advanced;
-          wordCursor = advanced;
-        }
-
-        final chunkWords = chunkEndWord > chunkStartWord
-            ? seg.words.sublist(chunkStartWord, chunkEndWord)
-            : const <String>[];
-        final chunkText = seg.text.substring(charCursor, chunkEnd);
-
-        result.add(
-          SpeakSegment(
-            text: chunkText,
-            words: chunkWords,
-            globalStartWordIndex:
-                seg.globalStartWordIndex + chunkStartWord,
-            audibleCharCount: computeAudibleCharCount(chunkText),
-            hasNumbers: detectNumbers(chunkText),
-          ),
-        );
-
-        charCursor = chunkEnd;
-      }
-    }
-    return result;
-  }
+  ) =>
+      seg.enforceMaxSegmentLength(segments, maxChars);
 
   void _cancelSegmentQueue() {
     debugPrint('[DeviceTTS] _cancelSegmentQueue '
@@ -1630,20 +1288,4 @@ class DeviceTtsRepository implements TtsRepository {
     }
     return result;
   }
-}
-
-class SpeakSegment {
-  const SpeakSegment({
-    required this.text,
-    required this.words,
-    required this.globalStartWordIndex,
-    required this.audibleCharCount,
-    required this.hasNumbers,
-  });
-
-  final String text;
-  final List<String> words;
-  final int globalStartWordIndex;
-  final int audibleCharCount;
-  final bool hasNumbers;
 }
