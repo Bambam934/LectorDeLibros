@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main, desarrollo]
+  pull_request:
+    branches: [main, desarrollo]
+
+# Cancela ejecuciones previas del mismo ref si llega un push nuevo.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (Fastify + TypeScript)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  flutter:
+    name: Flutter (analyze + test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: lectorsync
+    steps:
+      - uses: actions/checkout@v4
+      # channel: stable trae el Dart SDK actual (>= 3.11.5, requerido por pubspec).
+      # Si necesitas reproducibilidad estricta, fija flutter-version en su lugar.
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
