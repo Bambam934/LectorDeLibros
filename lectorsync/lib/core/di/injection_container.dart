@@ -16,15 +16,18 @@ import '../../features/reader/data/repositories/chapter_cache_repository.dart';
 import '../../features/reader/data/repositories/highlight_repository.dart';
 import '../../features/reader/data/repositories/reading_stats_repository.dart';
 import '../../features/reader/data/repositories/voice_preset_repository.dart';
+import '../../features/auth/data/repositories/local_auth_repository.dart';
 import '../../features/auth/data/repositories/remote_auth_repository.dart';
 import '../../features/auth/domain/repositories/auth_repository.dart';
 import '../../features/auth/presentation/cubit/auth_cubit.dart';
 import '../../features/library/data/repositories/book_shelf_repository.dart';
+import '../../features/library/data/repositories/local_library_repository.dart';
 import '../../features/library/data/repositories/remote_library_repository.dart';
 import '../../features/library/domain/repositories/library_repository.dart';
 import '../../features/reader/data/repositories/audio_tts_repository.dart';
 import '../../features/reader/data/repositories/device_tts_repository.dart';
 import '../../features/reader/data/repositories/just_audio_player_repository.dart';
+import '../../features/reader/data/repositories/local_reader_repository.dart';
 import '../../features/reader/data/repositories/remote_reader_repository.dart';
 import '../../features/reader/data/repositories/tts/tts_capabilities.dart';
 import '../../features/reader/data/repositories/tts_repository_proxy.dart';
@@ -33,6 +36,16 @@ import '../../features/reader/domain/repositories/reader_repository.dart';
 import '../../features/reader/domain/repositories/tts_repository.dart';
 import '../../features/settings/data/repositories/local_preferences_repository.dart';
 import '../../features/settings/domain/repositories/preferences_repository.dart';
+
+/// Flag de modo offline.
+///
+/// Cuando es `true` (por defecto mientras no haya backend desplegado),
+/// la app usa repositorios locales (LocalAuth / LocalLibrary / LocalReader)
+/// y NO depende del servidor para login, biblioteca ni lectura.
+///
+/// Para activar modo conectado, compilar con:
+///   `flutter build apk --dart-define=OFFLINE_MODE=false --dart-define=API_BASE_URL=https://tu-server.com`
+const _kOfflineMode = bool.fromEnvironment('OFFLINE_MODE', defaultValue: true);
 
 final _sessionExpiredNotifier = ValueNotifier<bool>(false);
 
@@ -169,9 +182,14 @@ Future<void> configureDependencies() async {
   }
 
   // Features - Auth
+  // En modo offline aceptamos cualquier credencial no vacía (LocalAuthRepository).
+  // Cuando el backend esté desplegado, compilar con --dart-define=OFFLINE_MODE=false
+  // para volver al flujo de tokens JWT.
   if (!sl.isRegistered<AuthRepository>()) {
     sl.registerLazySingleton<AuthRepository>(
-      () => RemoteAuthRepository(apiClient: sl(), secureStorage: sl()),
+      () => _kOfflineMode
+          ? LocalAuthRepository()
+          : RemoteAuthRepository(apiClient: sl(), secureStorage: sl()),
     );
   }
 
@@ -180,16 +198,27 @@ Future<void> configureDependencies() async {
   }
 
   // Features - Library
+  // Modo offline: LocalLibraryRepository persiste libros importados en el
+  // sandbox de la app (path_provider) + catálogo en SharedPreferences.
   if (!sl.isRegistered<LibraryRepository>()) {
     sl.registerLazySingleton<LibraryRepository>(
-      () => RemoteLibraryRepository(apiClient: sl()),
+      () => _kOfflineMode
+          ? LocalLibraryRepository()
+          : RemoteLibraryRepository(apiClient: sl()),
     );
   }
 
   // Features - Reader
+  // Modo offline: LocalReaderRepository parsea PDF/TXT/MD desde el archivo
+  // local y cachea los capítulos. Requiere que LibraryRepository sea Local
+  // para poder resolver el path del archivo.
   if (!sl.isRegistered<ReaderRepository>()) {
     sl.registerLazySingleton<ReaderRepository>(
-      () => RemoteReaderRepository(apiClient: sl()),
+      () => _kOfflineMode
+          ? LocalReaderRepository(
+              library: sl<LibraryRepository>() as LocalLibraryRepository,
+            )
+          : RemoteReaderRepository(apiClient: sl()),
     );
   }
 
