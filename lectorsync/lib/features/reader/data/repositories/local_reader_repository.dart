@@ -227,10 +227,15 @@ class LocalReaderRepository implements ReaderRepository {
   }
 
   String _chaptersCachePathFor(String storedPath) {
-    // Para `/path/{id}.pdf` → `/path/{id}.chapters.json`
+    // Para `/path/{id}.pdf` → `/path/{id}.chapters.v2.json`
+    //
+    // El sufijo de versión invalida las cachés generadas por parsers
+    // anteriores. v2 (2026-07-19): se añadió el reflow de texto, así que
+    // el contenido cacheado por v1 conserva los saltos de maquetación y
+    // debe re-parsearse.
     final dot = storedPath.lastIndexOf('.');
     final base = dot > 0 ? storedPath.substring(0, dot) : storedPath;
-    return '$base.chapters.json';
+    return '$base.chapters.v2.json';
   }
 
   // ---------- format parsers ----------
@@ -308,7 +313,7 @@ class LocalReaderRepository implements ReaderRepository {
       final title = subtitle == null || subtitle.isEmpty
           ? '$keyword $number'
           : '$keyword $number — $subtitle';
-      final body = content.substring(start, end).trim();
+      final body = reflowExtractedText(content.substring(start, end)).trim();
       final words = _tokenize(body);
       chapters.add(Chapter(
         id: _chapterId(i),
@@ -322,11 +327,58 @@ class LocalReaderRepository implements ReaderRepository {
     return chapters;
   }
 
+  /// Reflow del texto extraído de PDF/TXT.
+  ///
+  /// Los extractores devuelven el texto con los saltos de línea *físicos*
+  /// de la maquetación original (donde se acababa el ancho de la página),
+  /// no con la estructura lógica del documento. Renderizarlos tal cual
+  /// produce dos defectos muy visibles: párrafos huérfanos de una sola
+  /// palabra ("Su", "En") y frases partidas a media línea.
+  ///
+  /// Regla aplicada: **solo la línea en blanco separa párrafos**. Dentro de
+  /// un párrafo los saltos se unen con un espacio; si la línea termina en
+  /// guion, la palabra venía partida por el corte y se une sin espacio.
+  ///
+  /// No altera el número de palabras (los saltos ya contaban como
+  /// whitespace al tokenizar), así que el seguidor del TTS no se ve
+  /// afectado; sí mejora las fronteras de oración para el TTS estimado.
+  static String reflowExtractedText(String raw) {
+    final normalized = raw.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+    final blocks = normalized.split(RegExp(r'\n[ \t]*\n'));
+    final rebuilt = <String>[];
+
+    for (final block in blocks) {
+      final buffer = StringBuffer();
+      for (final line in block.split('\n')) {
+        final trimmed = line.trim();
+        if (trimmed.isEmpty) continue;
+        if (buffer.isEmpty) {
+          buffer.write(trimmed);
+          continue;
+        }
+        final soFar = buffer.toString();
+        if (soFar.endsWith('-')) {
+          // Palabra partida por el corte de línea: "consu-\nmismo".
+          buffer.clear();
+          buffer.write(soFar.substring(0, soFar.length - 1));
+          buffer.write(trimmed);
+        } else {
+          buffer.write(' ');
+          buffer.write(trimmed);
+        }
+      }
+      final joined = buffer.toString().trim();
+      if (joined.isNotEmpty) rebuilt.add(joined);
+    }
+
+    return rebuilt.join('\n\n');
+  }
+
   /// Divide texto plano en capítulos de aproximadamente
   /// [_targetWordsPerChapter] palabras, cortando en saltos de párrafo
   /// para no partir oraciones por la mitad.
   List<Chapter> _splitByWordCount(String content) {
-    final cleaned = content.trim();
+    final cleaned = reflowExtractedText(content).trim();
     if (cleaned.isEmpty) return const [];
 
     final paragraphs = cleaned.split(RegExp(r'\n\s*\n'));
