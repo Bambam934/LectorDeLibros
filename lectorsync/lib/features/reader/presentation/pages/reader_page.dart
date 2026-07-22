@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
@@ -48,30 +49,33 @@ class ReaderPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return BlocProvider(
-      create: (_) => ReaderBloc(
-        readerRepository: sl(),
-        ttsRepository: sl(),
-        audioTtsRepository:
-            sl.isRegistered<AudioTtsRepository>() ? sl<AudioTtsRepository>() : null,
-        chapterCacheRepository:
-            sl.isRegistered<ChapterCacheRepository>() ? sl<ChapterCacheRepository>() : null,
-        // Realtime sync is opt-in via DI: registered in
-        // injection_container.dart only when the app is online and
-        // logged in. Tests / offline-only builds skip the registration
-        // and the bloc gracefully no-ops on the sync side.
-        syncStreamClient: sl.isRegistered<SyncStreamClient>()
-            ? sl<SyncStreamClient>()
-            : null,
-        clientIdService: sl.isRegistered<ClientIdService>()
-            ? sl<ClientIdService>()
-            : null,
-      )..add(
-          ReaderStarted(
-            bookId,
-            initialChapterId: initialChapterId,
-            initialWordIndex: initialWordIndex,
+      create: (_) =>
+          ReaderBloc(
+            readerRepository: sl(),
+            ttsRepository: sl(),
+            audioTtsRepository: sl.isRegistered<AudioTtsRepository>()
+                ? sl<AudioTtsRepository>()
+                : null,
+            chapterCacheRepository: sl.isRegistered<ChapterCacheRepository>()
+                ? sl<ChapterCacheRepository>()
+                : null,
+            // Realtime sync is opt-in via DI: registered in
+            // injection_container.dart only when the app is online and
+            // logged in. Tests / offline-only builds skip the registration
+            // and the bloc gracefully no-ops on the sync side.
+            syncStreamClient: sl.isRegistered<SyncStreamClient>()
+                ? sl<SyncStreamClient>()
+                : null,
+            clientIdService: sl.isRegistered<ClientIdService>()
+                ? sl<ClientIdService>()
+                : null,
+          )..add(
+            ReaderStarted(
+              bookId,
+              initialChapterId: initialChapterId,
+              initialWordIndex: initialWordIndex,
+            ),
           ),
-        ),
       child: _ReaderView(bookTitle: bookTitle),
     );
   }
@@ -86,8 +90,7 @@ class _ReaderView extends StatefulWidget {
   State<_ReaderView> createState() => _ReaderViewState();
 }
 
-class _ReaderViewState extends State<_ReaderView>
-    with WidgetsBindingObserver {
+class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
   ScrollController? _scrollController;
   List<GlobalKey> _paragraphKeys = [];
   List<int> _wordOffsets = [];
@@ -99,16 +102,27 @@ class _ReaderViewState extends State<_ReaderView>
   bool _speedBarVisible = false;
   StreamSubscription<bool>? _estimatingSub;
 
+  // Auto-scroll "seguir la voz": cuando el usuario hace scroll manual
+  // durante la reproducción, desenganchamos (dejamos de arrastrar la vista)
+  // y mostramos un botón "Volver a la lectura" que vuelve a engancharlo.
+  final ValueNotifier<bool> _followVoice = ValueNotifier<bool>(true);
+  bool _showReturnButton = false;
+  bool _streamsSubscribed = false;
+  bool _disposed = false;
+
   // Reading session tracking.
   final Stopwatch _sessionStopwatch = Stopwatch();
   int _sessionStartWordIndex = 0;
   StreamSubscription<TtsPlaybackStatus>? _ttsStatusSub;
 
-  late final PreferencesCubit _preferencesCubit = PreferencesCubit(repository: sl());
+  late final PreferencesCubit _preferencesCubit = PreferencesCubit(
+    repository: sl(),
+  );
 
   void _toggleImmersive() => setState(() => _immersive = !_immersive);
   void _toggleToc() => setState(() => _tocVisible = !_tocVisible);
-  void _toggleSpeedBar() => setState(() => _speedBarVisible = !_speedBarVisible);
+  void _toggleSpeedBar() =>
+      setState(() => _speedBarVisible = !_speedBarVisible);
 
   void _openCustomizationSheet() {
     showModalBottomSheet<void>(
@@ -223,6 +237,7 @@ class _ReaderViewState extends State<_ReaderView>
   }
 
   void _scrollToParagraph(int currentWordIndex) {
+    if (!_followVoice.value) return;
     if (_scrollController == null || !_scrollController!.hasClients) return;
     if (_wordOffsets.isEmpty || _paragraphKeys.isEmpty) return;
 
@@ -249,10 +264,30 @@ class _ReaderViewState extends State<_ReaderView>
     _wordOffsets = offsets;
   }
 
+  /// El usuario hizo scroll manual durante la reproducción: desengancha el
+  /// seguidor (para no pelear con su gesto) y ofrece volver con un botón.
+  void _onUserScroll() {
+    if (_disposed || !mounted || !_followVoice.value) return;
+    if (!context.read<ReaderBloc>().state.isTtsActive) return;
+    _followVoice.value = false;
+    setState(() => _showReturnButton = true);
+  }
+
+  /// Vuelve a enganchar el seguidor y re-centra en la palabra que se lee.
+  void _returnToReading() {
+    _followVoice.value = true;
+    _lastScrolledParagraphIndex = -1;
+    final idx = context.read<ReaderBloc>().state.currentWordIndex;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_disposed && mounted) _scrollToParagraph(idx);
+    });
+    if (!_disposed && mounted) setState(() => _showReturnButton = false);
+  }
+
   void _listenEstimating() {
     _estimatingSub?.cancel();
     _estimatingSub = sl<DeviceTtsRepository>().estimatingStream.listen((v) {
-      if (mounted) setState(() => _isEstimatingProgress = v);
+      if (!_disposed && mounted) setState(() => _isEstimatingProgress = v);
     });
   }
 
@@ -281,6 +316,12 @@ class _ReaderViewState extends State<_ReaderView>
             );
           }
           _sessionStopwatch.reset();
+        }
+        // La lectura paró: no hay voz que seguir. Re-enganchamos y
+        // ocultamos el botón para la próxima sesión.
+        _followVoice.value = true;
+        if (_showReturnButton && !_disposed && mounted) {
+          setState(() => _showReturnButton = false);
         }
       }
     });
@@ -317,10 +358,12 @@ class _ReaderViewState extends State<_ReaderView>
     final bloc = context.read<ReaderBloc>();
     final messenger = ScaffoldMessenger.of(context);
     if (bloc.state.currentChapter == null) {
-      messenger.showSnackBar(const SnackBar(
-        content: Text('Sin capítulo activo para sincronizar'),
-        duration: Duration(seconds: 2),
-      ));
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Sin capítulo activo para sincronizar'),
+          duration: Duration(seconds: 2),
+        ),
+      );
       return;
     }
     Haptics.light();
@@ -331,25 +374,44 @@ class _ReaderViewState extends State<_ReaderView>
       // engine and the tracker start from the same position.
       bloc.add(const ReaderTtsRestart());
     }
-    messenger.showSnackBar(SnackBar(
-      content: Row(
-        children: [
-          const Icon(Icons.cloud_done_rounded,
-              size: 20, color: Colors.white),
-          const SizedBox(width: 8),
-          Text(wasActive
-              ? 'Realineando voz y guardando…'
-              : 'Sincronizando posición…'),
-        ],
+    messenger.showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const Icon(Icons.cloud_done_rounded, size: 20, color: Colors.white),
+            const SizedBox(width: 8),
+            Text(
+              wasActive
+                  ? 'Realineando voz y guardando…'
+                  : 'Sincronizando posición…',
+            ),
+          ],
+        ),
+        duration: const Duration(seconds: 2),
       ),
-      duration: const Duration(seconds: 2),
-    ));
+    );
   }
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Suscribimos a los streams del DeviceTtsRepository (singleton) UNA
+    // sola vez, con las dependencias ya disponibles. Antes esto vivía en
+    // build(), lo que ataba la suscripción a la fase de construcción: con
+    // reconstrucciones frecuentes (p. ej. el botón de auto-scroll) el
+    // callback podía llegar a un State en transición y disparaba
+    // setState sobre un Element defunct.
+    if (!_streamsSubscribed) {
+      _streamsSubscribed = true;
+      _listenEstimating();
+      _listenTtsStatus();
+    }
   }
 
   @override
@@ -382,8 +444,8 @@ class _ReaderViewState extends State<_ReaderView>
     //     mobile, tab-hide on web).
     //   - Auto-pausing TTS is destructive (kills the playing voice), so
     //     we only do it on the strict `paused` state.
-    final shouldSave = state == AppLifecycleState.paused ||
-        state == AppLifecycleState.hidden;
+    final shouldSave =
+        state == AppLifecycleState.paused || state == AppLifecycleState.hidden;
     final shouldStopTts = state == AppLifecycleState.paused;
 
     if (!shouldSave) return;
@@ -402,13 +464,15 @@ class _ReaderViewState extends State<_ReaderView>
 
   @override
   void dispose() {
+    _disposed = true;
     WidgetsBinding.instance.removeObserver(this);
     // Save any ongoing reading session before dispose.
     if (_sessionStopwatch.isRunning) {
       _sessionStopwatch.stop();
-      final wordsRead = (context.read<ReaderBloc>().state.currentWordIndex -
-              _sessionStartWordIndex)
-          .abs();
+      final wordsRead =
+          (context.read<ReaderBloc>().state.currentWordIndex -
+                  _sessionStartWordIndex)
+              .abs();
       if (_sessionStopwatch.elapsed.inSeconds > 5 && wordsRead > 0) {
         sl<ReadingStatsRepository>().recordSession(
           bookId: context.read<ReaderBloc>().state.bookId,
@@ -421,16 +485,12 @@ class _ReaderViewState extends State<_ReaderView>
     _estimatingSub?.cancel();
     _preferencesCubit.close();
     _scrollController?.dispose();
+    _followVoice.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    _estimatingSub ??= (() {
-      _listenEstimating();
-      _listenTtsStatus();
-      return _estimatingSub;
-    })();
     return BlocProvider.value(
       value: _preferencesCubit,
       child: BlocBuilder<PreferencesCubit, ReadingPreferences>(
@@ -456,7 +516,8 @@ class _ReaderViewState extends State<_ReaderView>
       shortcuts: <LogicalKeySet, Intent>{
         LogicalKeySet(LogicalKeyboardKey.space): const _PlayPauseIntent(),
         LogicalKeySet(LogicalKeyboardKey.arrowLeft): const _PrevChapterIntent(),
-        LogicalKeySet(LogicalKeyboardKey.arrowRight): const _NextChapterIntent(),
+        LogicalKeySet(LogicalKeyboardKey.arrowRight):
+            const _NextChapterIntent(),
         LogicalKeySet(LogicalKeyboardKey.keyT): const _ToggleTocIntent(),
         // Desktop-friendly shortcuts. Ctrl on Win/Linux, Cmd on macOS;
         // Flutter's LogicalKeyboardKey.control matches either modifier
@@ -482,12 +543,18 @@ class _ReaderViewState extends State<_ReaderView>
       child: Actions(
         actions: <Type, Action>{
           _PlayPauseIntent: _CallbackAction(() {
-          final state = context.read<ReaderBloc>().state;
-          final hasText = state.currentChapter?.words.isNotEmpty ?? false;
-          if (hasText) context.read<ReaderBloc>().add(const ReaderTtsToggled());
-        }),
-          _PrevChapterIntent: _CallbackAction(() => _navigateChapter(context, -1)),
-          _NextChapterIntent: _CallbackAction(() => _navigateChapter(context, 1)),
+            final state = context.read<ReaderBloc>().state;
+            final hasText = state.currentChapter?.words.isNotEmpty ?? false;
+            if (hasText) {
+              context.read<ReaderBloc>().add(const ReaderTtsToggled());
+            }
+          }),
+          _PrevChapterIntent: _CallbackAction(
+            () => _navigateChapter(context, -1),
+          ),
+          _NextChapterIntent: _CallbackAction(
+            () => _navigateChapter(context, 1),
+          ),
           _ToggleTocIntent: _CallbackAction(_toggleToc),
           _OpenBookmarksIntent: _CallbackAction(() => _openBookmarks(context)),
           _SyncNowIntent: _CallbackAction(_syncNow),
@@ -496,6 +563,22 @@ class _ReaderViewState extends State<_ReaderView>
         },
         child: Scaffold(
           backgroundColor: colors.background,
+          floatingActionButtonLocation:
+              FloatingActionButtonLocation.centerFloat,
+          floatingActionButton: _showReturnButton
+              ? Padding(
+                  // Elevado sobre la barra de capítulos (Anterior/Siguiente)
+                  // para no taparla.
+                  padding: const EdgeInsets.only(bottom: 68),
+                  child: FloatingActionButton.extended(
+                    onPressed: _returnToReading,
+                    backgroundColor: colors.accent,
+                    foregroundColor: colors.background,
+                    icon: const Icon(Icons.vertical_align_center),
+                    label: const Text('Volver a la lectura'),
+                  ),
+                )
+              : null,
           appBar: _immersive
               ? null
               : AppBar(
@@ -529,9 +612,13 @@ class _ReaderViewState extends State<_ReaderView>
                   if (curr.isTtsActive &&
                       prev.currentWordIndex != curr.currentWordIndex) {
                     final prevPara = _findParagraphIndex(
-                        prev.currentWordIndex, _wordOffsets);
+                      prev.currentWordIndex,
+                      _wordOffsets,
+                    );
                     final currPara = _findParagraphIndex(
-                        curr.currentWordIndex, _wordOffsets);
+                      curr.currentWordIndex,
+                      _wordOffsets,
+                    );
                     if (currPara != prevPara) return true;
                   }
                   return false;
@@ -583,8 +670,11 @@ class _ReaderViewState extends State<_ReaderView>
                       behavior: SnackBarBehavior.floating,
                       content: Row(
                         children: [
-                          const Icon(Icons.devices_rounded,
-                              size: 20, color: Colors.white),
+                          const Icon(
+                            Icons.devices_rounded,
+                            size: 20,
+                            color: Colors.white,
+                          ),
                           const SizedBox(width: 12),
                           Expanded(
                             child: Text(
@@ -596,8 +686,8 @@ class _ReaderViewState extends State<_ReaderView>
                       ),
                       action: SnackBarAction(
                         label: 'Ir allí',
-                        onPressed: () => bloc.add(
-                            const ReaderRemoteProgressAccepted()),
+                        onPressed: () =>
+                            bloc.add(const ReaderRemoteProgressAccepted()),
                       ),
                     ),
                   );
@@ -613,12 +703,14 @@ class _ReaderViewState extends State<_ReaderView>
             ],
             child: BlocConsumer<ReaderBloc, ReaderState>(
               listenWhen: (prev, curr) =>
-                  curr.errorMessage != null && prev.errorMessage != curr.errorMessage,
+                  curr.errorMessage != null &&
+                  prev.errorMessage != curr.errorMessage,
               listener: (context, state) {
                 final message = state.errorMessage;
                 if (message == null) return;
-                ScaffoldMessenger.of(context)
-                    .showSnackBar(SnackBar(content: Text(message)));
+                ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(SnackBar(content: Text(message)));
               },
               buildWhen: (prev, curr) =>
                   prev.status != curr.status ||
@@ -651,9 +743,11 @@ class _ReaderViewState extends State<_ReaderView>
                 }
 
                 return bp.when(
-                  compact: () => _buildCompactBody(context, state, prefs, colors),
+                  compact: () =>
+                      _buildCompactBody(context, state, prefs, colors),
                   medium: () => _buildMediumBody(context, state, prefs, colors),
-                  expanded: () => _buildExpandedBody(context, state, prefs, colors),
+                  expanded: () =>
+                      _buildExpandedBody(context, state, prefs, colors),
                 );
               },
             ),
@@ -688,9 +782,7 @@ class _ReaderViewState extends State<_ReaderView>
               ? 'Ocultar velocidad'
               : 'Velocidad de lectura',
           icon: Icon(
-            _speedBarVisible
-                ? Icons.speed_rounded
-                : Icons.speed_outlined,
+            _speedBarVisible ? Icons.speed_rounded : Icons.speed_outlined,
             color: _speedBarVisible ? colors.accent : null,
           ),
         );
@@ -728,30 +820,30 @@ class _ReaderViewState extends State<_ReaderView>
     final tocBtn = bp.isExpanded
         ? IconButton(
             onPressed: _toggleToc,
-            icon: Icon(_tocVisible
-                ? Icons.menu_book_rounded
-                : Icons.menu_book_outlined),
+            icon: Icon(
+              _tocVisible ? Icons.menu_book_rounded : Icons.menu_book_outlined,
+            ),
             tooltip: 'Índice',
           )
         : (bp.isMedium
-            ? IconButton(
-                onPressed: _toggleToc,
-                icon: const Icon(Icons.list_rounded),
-                tooltip: 'Índice',
-              )
-            : const SizedBox.shrink());
+              ? IconButton(
+                  onPressed: _toggleToc,
+                  icon: const Icon(Icons.list_rounded),
+                  tooltip: 'Índice',
+                )
+              : const SizedBox.shrink());
 
     // Cross-platform shortcut hint suffix for desktop / web. Empty
     // string on mobile to avoid clutter — touch users don't have
     // keyboard shortcuts. Include kIsWeb because desktop browsers
     // accept the same shortcuts via the Shortcuts widget above.
     final platform = defaultTargetPlatform;
-    final isKeyboardLikely = kIsWeb ||
+    final isKeyboardLikely =
+        kIsWeb ||
         platform == TargetPlatform.windows ||
         platform == TargetPlatform.macOS ||
         platform == TargetPlatform.linux;
-    String hint(String shortcut) =>
-        isKeyboardLikely ? '  ($shortcut)' : '';
+    String hint(String shortcut) => isKeyboardLikely ? '  ($shortcut)' : '';
 
     final searchBtn = IconButton(
       onPressed: () => _openSearch(context),
@@ -912,6 +1004,8 @@ class _ReaderViewState extends State<_ReaderView>
       colors: colors,
       immersive: _immersive,
       scrollController: _scrollController,
+      followVoice: _followVoice,
+      onUserScroll: _onUserScroll,
       paragraphKeys: _paragraphKeys,
       onToggleImmersive: _toggleImmersive,
       onParagraphKeys: (keys) => _paragraphKeys = keys,
@@ -942,29 +1036,32 @@ class _ReaderViewState extends State<_ReaderView>
                 )
               : const SizedBox.shrink(),
         ),
-        if (_tocVisible) VerticalDivider(width: 1, color: scheme.outlineVariant),
-    Expanded(
-      child: _ReaderBody(
-        state: state,
-        prefs: prefs,
-        colors: colors,
-        immersive: _immersive,
-        scrollController: _scrollController,
-        paragraphKeys: _paragraphKeys,
-        onToggleImmersive: _toggleImmersive,
-        onParagraphKeys: (keys) => _paragraphKeys = keys,
-        onWordOffsets: _updateWordOffsets,
-        onNavigateChapter: (dir) => _navigateChapter(context, dir),
-        speedBarVisible: _speedBarVisible,
-        onToggleSpeedBar: _toggleSpeedBar,
-        isEstimatingProgress: _isEstimatingProgress,
-      ),
-    ),
-  ],
-  );
-}
+        if (_tocVisible)
+          VerticalDivider(width: 1, color: scheme.outlineVariant),
+        Expanded(
+          child: _ReaderBody(
+            state: state,
+            prefs: prefs,
+            colors: colors,
+            immersive: _immersive,
+            scrollController: _scrollController,
+            followVoice: _followVoice,
+            onUserScroll: _onUserScroll,
+            paragraphKeys: _paragraphKeys,
+            onToggleImmersive: _toggleImmersive,
+            onParagraphKeys: (keys) => _paragraphKeys = keys,
+            onWordOffsets: _updateWordOffsets,
+            onNavigateChapter: (dir) => _navigateChapter(context, dir),
+            speedBarVisible: _speedBarVisible,
+            onToggleSpeedBar: _toggleSpeedBar,
+            isEstimatingProgress: _isEstimatingProgress,
+          ),
+        ),
+      ],
+    );
+  }
 
-Widget _buildExpandedBody(
+  Widget _buildExpandedBody(
     BuildContext context,
     ReaderState state,
     ReadingPreferences prefs,
@@ -983,27 +1080,30 @@ Widget _buildExpandedBody(
                 )
               : const SizedBox.shrink(),
         ),
-        if (_tocVisible) VerticalDivider(width: 1, color: scheme.outlineVariant),
-    Expanded(
-      flex: 3,
-      child: _ReaderBody(
-        state: state,
-        prefs: prefs,
-        colors: colors,
-        immersive: _immersive,
-        scrollController: _scrollController,
-        paragraphKeys: _paragraphKeys,
-        onToggleImmersive: _toggleImmersive,
-        onParagraphKeys: (keys) => _paragraphKeys = keys,
-        onWordOffsets: _updateWordOffsets,
-        onNavigateChapter: (dir) => _navigateChapter(context, dir),
-        speedBarVisible: _speedBarVisible,
-        onToggleSpeedBar: _toggleSpeedBar,
-        isEstimatingProgress: _isEstimatingProgress,
-      ),
-    ),
-  ],
-);
+        if (_tocVisible)
+          VerticalDivider(width: 1, color: scheme.outlineVariant),
+        Expanded(
+          flex: 3,
+          child: _ReaderBody(
+            state: state,
+            prefs: prefs,
+            colors: colors,
+            immersive: _immersive,
+            scrollController: _scrollController,
+            followVoice: _followVoice,
+            onUserScroll: _onUserScroll,
+            paragraphKeys: _paragraphKeys,
+            onToggleImmersive: _toggleImmersive,
+            onParagraphKeys: (keys) => _paragraphKeys = keys,
+            onWordOffsets: _updateWordOffsets,
+            onNavigateChapter: (dir) => _navigateChapter(context, dir),
+            speedBarVisible: _speedBarVisible,
+            onToggleSpeedBar: _toggleSpeedBar,
+            isEstimatingProgress: _isEstimatingProgress,
+          ),
+        ),
+      ],
+    );
   }
 }
 
@@ -1018,7 +1118,8 @@ class _ChapterList extends StatelessWidget {
   Widget build(BuildContext context) {
     return BlocBuilder<ReaderBloc, ReaderState>(
       buildWhen: (prev, curr) =>
-          prev.chapters != curr.chapters || prev.currentChapterIndex != curr.currentChapterIndex,
+          prev.chapters != curr.chapters ||
+          prev.currentChapterIndex != curr.currentChapterIndex,
       builder: (context, state) {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -1036,8 +1137,8 @@ class _ChapterList extends StatelessWidget {
                   Text(
                     '${state.chapters.length} capítulos',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
                   ),
                 ],
               ),
@@ -1050,40 +1151,45 @@ class _ChapterList extends StatelessWidget {
                 itemBuilder: (context, index) {
                   final chapter = state.chapters[index];
                   final isSelected = state.currentChapterIndex == index;
-        return ListTile(
-          selected: isSelected,
-          leading: CircleAvatar(
-            radius: 14,
-            backgroundColor: isSelected
-                ? Theme.of(context).colorScheme.primary
-                : Theme.of(context).colorScheme.surfaceContainerHighest,
-            child: Text(
-              '${index + 1}',
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w700,
-                color: isSelected
-                    ? Theme.of(context).colorScheme.onPrimary
-                    : Theme.of(context).colorScheme.onSurface,
-              ),
-            ),
-          ),
-          title: Text(
-            chapter.title,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-          trailing: isSelected
-              ? Icon(Icons.check_circle_rounded,
-                  size: 18, color: Theme.of(context).colorScheme.primary)
-              : null,
-          onTap: () {
+                  return ListTile(
+                    selected: isSelected,
+                    leading: CircleAvatar(
+                      radius: 14,
+                      backgroundColor: isSelected
+                          ? Theme.of(context).colorScheme.primary
+                          : Theme.of(
+                              context,
+                            ).colorScheme.surfaceContainerHighest,
+                      child: Text(
+                        '${index + 1}',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: isSelected
+                              ? Theme.of(context).colorScheme.onPrimary
+                              : Theme.of(context).colorScheme.onSurface,
+                        ),
+                      ),
+                    ),
+                    title: Text(
+                      chapter.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    trailing: isSelected
+                        ? Icon(
+                            Icons.check_circle_rounded,
+                            size: 18,
+                            color: Theme.of(context).colorScheme.primary,
+                          )
+                        : null,
+                    onTap: () {
                       if (breakpointOf(context).isCompact) {
                         Navigator.of(context).pop();
                       }
                       context.read<ReaderBloc>().add(
-                            ReaderChapterSelected(chapter.id),
-                          );
+                        ReaderChapterSelected(chapter.id),
+                      );
                     },
                   );
                 },
@@ -1105,6 +1211,8 @@ class _ReaderBody extends StatefulWidget {
     required this.colors,
     required this.immersive,
     required this.scrollController,
+    required this.followVoice,
+    required this.onUserScroll,
     required this.paragraphKeys,
     required this.onToggleImmersive,
     required this.onParagraphKeys,
@@ -1120,6 +1228,8 @@ class _ReaderBody extends StatefulWidget {
   final ReadingPaletteColors colors;
   final bool immersive;
   final ScrollController? scrollController;
+  final ValueListenable<bool> followVoice;
+  final VoidCallback onUserScroll;
   final List<GlobalKey> paragraphKeys;
   final VoidCallback onToggleImmersive;
   final void Function(List<GlobalKey>) onParagraphKeys;
@@ -1158,8 +1268,9 @@ class _ReaderBodyState extends State<_ReaderBody> {
     _cachedParagraphs = paragraphs;
     _cachedWordOffsets = offsets;
     _cachedKeys = List.generate(paragraphs.length, (_) => GlobalKey());
-    _cachedChapterWordMax =
-        chapter.words.isNotEmpty ? chapter.words.length : chapter.wordCount;
+    _cachedChapterWordMax = chapter.words.isNotEmpty
+        ? chapter.words.length
+        : chapter.wordCount;
 
     widget.onWordOffsets(_cachedWordOffsets);
     widget.onParagraphKeys(_cachedKeys);
@@ -1199,141 +1310,154 @@ class _ReaderBodyState extends State<_ReaderBody> {
     final paragraphKeys = _cachedKeys;
     final chapterWordMax = _cachedChapterWordMax;
 
-    return GestureDetector(
-      onTap: widget.onToggleImmersive,
-      // Horizontal swipe → previous / next chapter (mobile gesture).
-      // Threshold of 600 px/s avoids accidental triggers from slow scrolls
-      // or from the slider/text-selection drag handles.
-      onHorizontalDragEnd: (details) {
-        final velocity = details.primaryVelocity ?? 0;
-        if (velocity.abs() < 600) return;
-        if (velocity > 0) {
-          // Swipe right → previous chapter.
-          widget.onNavigateChapter(-1);
-        } else {
-          // Swipe left → next chapter.
-          widget.onNavigateChapter(1);
+    return NotificationListener<UserScrollNotification>(
+      onNotification: (n) {
+        if (n.direction != ScrollDirection.idle) {
+          widget.onUserScroll();
         }
+        return false;
       },
-      behavior: HitTestBehavior.opaque,
-      child: Column(
-        children: [
-          if (!widget.immersive)
-            BlocBuilder<ReaderBloc, ReaderState>(
-              buildWhen: (prev, curr) =>
-                  prev.progress != curr.progress ||
-                  prev.currentChapterIndex != curr.currentChapterIndex ||
-                  prev.chapters.length != curr.chapters.length,
-              builder: (context, s) {
-                final cn = s.currentChapterIndex + 1;
-                final tc = s.totalChapters;
-                final pct =
-                    (s.progress * 100).clamp(0, 100).toStringAsFixed(1);
-                return _ChapterHeader(
-                  chapterNumber: cn,
-                  totalChapters: tc,
-                  percent: pct,
-                  progress: s.progress,
+      child: GestureDetector(
+        onTap: widget.onToggleImmersive,
+        // Horizontal swipe → previous / next chapter (mobile gesture).
+        // Threshold of 600 px/s avoids accidental triggers from slow scrolls
+        // or from the slider/text-selection drag handles.
+        onHorizontalDragEnd: (details) {
+          final velocity = details.primaryVelocity ?? 0;
+          if (velocity.abs() < 600) return;
+          if (velocity > 0) {
+            // Swipe right → previous chapter.
+            widget.onNavigateChapter(-1);
+          } else {
+            // Swipe left → next chapter.
+            widget.onNavigateChapter(1);
+          }
+        },
+        behavior: HitTestBehavior.opaque,
+        child: Column(
+          children: [
+            if (!widget.immersive)
+              BlocBuilder<ReaderBloc, ReaderState>(
+                buildWhen: (prev, curr) =>
+                    prev.progress != curr.progress ||
+                    prev.currentChapterIndex != curr.currentChapterIndex ||
+                    prev.chapters.length != curr.chapters.length,
+                builder: (context, s) {
+                  final cn = s.currentChapterIndex + 1;
+                  final tc = s.totalChapters;
+                  final pct = (s.progress * 100)
+                      .clamp(0, 100)
+                      .toStringAsFixed(1);
+                  return _ChapterHeader(
+                    chapterNumber: cn,
+                    totalChapters: tc,
+                    percent: pct,
+                    progress: s.progress,
+                    foreground: colors.foreground,
+                    accent: colors.accent,
+                  );
+                },
+              ),
+            if (!widget.immersive && chapterWordMax > 0)
+              BlocBuilder<ReaderBloc, ReaderState>(
+                buildWhen: (prev, curr) =>
+                    prev.ttsStatus != curr.ttsStatus ||
+                    prev.currentWordIndex != curr.currentWordIndex,
+                builder: (context, s) => _PositionSlider(
+                  currentWord: s.currentWordIndex,
+                  maxWords: chapterWordMax,
+                  ttsStatus: s.ttsStatus,
+                  isEstimatingProgress: widget.isEstimatingProgress,
                   foreground: colors.foreground,
                   accent: colors.accent,
-                );
-              },
-            ),
-          if (!widget.immersive && chapterWordMax > 0)
-            BlocBuilder<ReaderBloc, ReaderState>(
-              buildWhen: (prev, curr) =>
-                  prev.ttsStatus != curr.ttsStatus ||
-                  prev.currentWordIndex != curr.currentWordIndex,
-            builder: (context, s) => _PositionSlider(
-              currentWord: s.currentWordIndex,
-              maxWords: chapterWordMax,
-              ttsStatus: s.ttsStatus,
-              isEstimatingProgress: widget.isEstimatingProgress,
-              foreground: colors.foreground,
-              accent: colors.accent,
-              // Commit only when the user releases the thumb. Routing
-              // ReaderWordIndexChanged through onChangeEnd instead of
-              // onChanged is what stops the Material Slider's per-rebuild
-              // ghost ticks (~once per tracker emission on Web/Desktop)
-              // from cascading into a stop()/restart of TTS.
-              onChangeEnd: (v) => context
-                  .read<ReaderBloc>()
-                  .add(ReaderWordIndexChanged(v.round())),
-            ),
-            ),
-          // ── Speed control bar (only when user toggles it on) ──
-          if (!widget.immersive)
-            AnimatedSize(
-              duration: const Duration(milliseconds: 220),
-              curve: Curves.easeInOut,
-              child: widget.speedBarVisible
-                  ? _InlineSpeedBar(
-                      accent: colors.accent,
-                      foreground: colors.foreground,
-                      onClose: widget.onToggleSpeedBar,
-                    )
-                  : const SizedBox.shrink(),
-            ),
-          Expanded(
-            child: Builder(builder: (context) {
-              final textStyle = TextStyle(
-                color: colors.foreground,
-                fontSize: prefs.fontSize,
-                height: prefs.lineHeight,
-                letterSpacing: prefs.letterSpacing,
-                fontFamily: prefs.fontFamilyName,
-              );
-
-        return Center(
-          child: ConstrainedBox(
-            constraints:
-                BoxConstraints(maxWidth: prefs.maxColumnWidth),
-            child: ListView.builder(
-              key: ValueKey(prefs.fontFamilyName),
-              controller: widget.scrollController,
-              padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
-              itemCount: paragraphs.length + 1,
-              itemBuilder: (context, index) {
-                if (index == 0) {
-                  final chapter = widget.state.currentChapter;
-                  return _EditorialChapterHeader(
-                    chapterNumber: widget.state.currentChapterIndex + 1,
-                    chapterTitle: chapter?.title ?? '',
-                    foreground: colors.foreground,
+                  // Commit only when the user releases the thumb. Routing
+                  // ReaderWordIndexChanged through onChangeEnd instead of
+                  // onChanged is what stops the Material Slider's per-rebuild
+                  // ghost ticks (~once per tracker emission on Web/Desktop)
+                  // from cascading into a stop()/restart of TTS.
+                  onChangeEnd: (v) => context.read<ReaderBloc>().add(
+                    ReaderWordIndexChanged(v.round()),
+                  ),
+                ),
+              ),
+            // ── Speed control bar (only when user toggles it on) ──
+            if (!widget.immersive)
+              AnimatedSize(
+                duration: const Duration(milliseconds: 220),
+                curve: Curves.easeInOut,
+                child: widget.speedBarVisible
+                    ? _InlineSpeedBar(
+                        accent: colors.accent,
+                        foreground: colors.foreground,
+                        onClose: widget.onToggleSpeedBar,
+                      )
+                    : const SizedBox.shrink(),
+              ),
+            Expanded(
+              child: Builder(
+                builder: (context) {
+                  final textStyle = TextStyle(
+                    color: colors.foreground,
+                    fontSize: prefs.fontSize,
+                    height: prefs.lineHeight,
+                    letterSpacing: prefs.letterSpacing,
+                    fontFamily: prefs.fontFamilyName,
                   );
-                }
-                final paraIndex = index - 1;
-                final endIdx = (paraIndex + 1 < wordOffsets.length)
-                    ? wordOffsets[paraIndex + 1] - 1
-                    : chapterWordMax - 1;
-                return _ParagraphHighlightProxy(
-                  key: paraIndex < paragraphKeys.length
-                      ? paragraphKeys[paraIndex]
-                      : null,
-                  paragraph: paragraphs[paraIndex],
-                  startWordIndex: wordOffsets[paraIndex],
-                  endWordIndex: endIdx,
-                  textStyle: textStyle,
-                  accentColor: colors.accent,
-                  isFirstParagraph: paraIndex == 0,
-                );
-              },
+
+                  return Center(
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxWidth: prefs.maxColumnWidth,
+                      ),
+                      child: ListView.builder(
+                        key: ValueKey(prefs.fontFamilyName),
+                        controller: widget.scrollController,
+                        padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+                        itemCount: paragraphs.length + 1,
+                        itemBuilder: (context, index) {
+                          if (index == 0) {
+                            final chapter = widget.state.currentChapter;
+                            return _EditorialChapterHeader(
+                              chapterNumber:
+                                  widget.state.currentChapterIndex + 1,
+                              chapterTitle: chapter?.title ?? '',
+                              foreground: colors.foreground,
+                            );
+                          }
+                          final paraIndex = index - 1;
+                          final endIdx = (paraIndex + 1 < wordOffsets.length)
+                              ? wordOffsets[paraIndex + 1] - 1
+                              : chapterWordMax - 1;
+                          return _ParagraphHighlightProxy(
+                            key: paraIndex < paragraphKeys.length
+                                ? paragraphKeys[paraIndex]
+                                : null,
+                            followVoice: widget.followVoice,
+                            paragraph: paragraphs[paraIndex],
+                            startWordIndex: wordOffsets[paraIndex],
+                            endWordIndex: endIdx,
+                            textStyle: textStyle,
+                            accentColor: colors.accent,
+                            isFirstParagraph: paraIndex == 0,
+                          );
+                        },
+                      ),
+                    ),
+                  );
+                },
+              ),
             ),
-          ),
-        );
-            }),
-          ),
-          if (!widget.immersive)
-            _ChapterNavBar(
-              canPrev: state.currentChapterIndex > 0,
-              canNext:
-                  state.currentChapterIndex < state.chapters.length - 1,
-              foreground: colors.foreground,
-              background: scheme.surfaceContainerHighest,
-              onPrev: () => widget.onNavigateChapter(-1),
-              onNext: () => widget.onNavigateChapter(1),
-            ),
-        ],
+            if (!widget.immersive)
+              _ChapterNavBar(
+                canPrev: state.currentChapterIndex > 0,
+                canNext: state.currentChapterIndex < state.chapters.length - 1,
+                foreground: colors.foreground,
+                background: scheme.surfaceContainerHighest,
+                onPrev: () => widget.onNavigateChapter(-1),
+                onNext: () => widget.onNavigateChapter(1),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -1388,19 +1512,19 @@ class _ChapterHeader extends StatelessWidget {
               ),
             ],
           ),
-        const SizedBox(height: 8),
-        Semantics(
-          label: 'Progreso del capítulo: $percent porciento',
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(99),
-            child: LinearProgressIndicator(
-              value: progress,
-              minHeight: 4,
-              backgroundColor: foreground.withValues(alpha: 0.12),
-              valueColor: AlwaysStoppedAnimation<Color>(accent),
+          const SizedBox(height: 8),
+          Semantics(
+            label: 'Progreso del capítulo: $percent porciento',
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(99),
+              child: LinearProgressIndicator(
+                value: progress,
+                minHeight: 4,
+                backgroundColor: foreground.withValues(alpha: 0.12),
+                valueColor: AlwaysStoppedAnimation<Color>(accent),
+              ),
             ),
           ),
-        ),
         ],
       ),
     );
@@ -1525,15 +1649,25 @@ class _PositionSliderState extends State<_PositionSlider> {
   Widget build(BuildContext context) {
     final indicator = switch (widget.ttsStatus) {
       TtsPlaybackStatus.loading => const SizedBox(
-          width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
-      TtsPlaybackStatus.playing =>
-        Icon(Icons.graphic_eq_rounded, size: 16, color: widget.accent),
-      TtsPlaybackStatus.error =>
-        const Icon(Icons.volume_off_rounded, size: 16, color: Colors.red),
+        width: 14,
+        height: 14,
+        child: CircularProgressIndicator(strokeWidth: 2),
+      ),
+      TtsPlaybackStatus.playing => Icon(
+        Icons.graphic_eq_rounded,
+        size: 16,
+        color: widget.accent,
+      ),
+      TtsPlaybackStatus.error => const Icon(
+        Icons.volume_off_rounded,
+        size: 16,
+        color: Colors.red,
+      ),
       _ => const SizedBox.shrink(),
     };
 
-    final estimateBadge = widget.isEstimatingProgress &&
+    final estimateBadge =
+        widget.isEstimatingProgress &&
             (widget.ttsStatus == TtsPlaybackStatus.playing ||
                 widget.ttsStatus == TtsPlaybackStatus.loading)
         ? Tooltip(
@@ -1571,7 +1705,8 @@ class _PositionSliderState extends State<_PositionSlider> {
             ],
           ),
           Semantics(
-            label: 'Posición de lectura: $displayedWord de '
+            label:
+                'Posición de lectura: $displayedWord de '
                 '${widget.maxWords} palabras',
             child: SliderTheme(
               data: SliderThemeData(
@@ -1634,6 +1769,7 @@ class _ReadingTimer extends StatelessWidget {
 
 class _ParagraphHighlightProxy extends StatefulWidget {
   const _ParagraphHighlightProxy({
+    required this.followVoice,
     required this.paragraph,
     required this.startWordIndex,
     required this.endWordIndex,
@@ -1643,6 +1779,7 @@ class _ParagraphHighlightProxy extends StatefulWidget {
     super.key,
   });
 
+  final ValueListenable<bool> followVoice;
   final String paragraph;
   final int startWordIndex;
   final int endWordIndex;
@@ -1682,14 +1819,15 @@ class _ParagraphHighlightProxyState extends State<_ParagraphHighlightProxy> {
     final sentences = <_Sentence>[];
     int wordCursor = widget.startWordIndex;
     for (final part in parts) {
-      final wordCount =
-          part.split(_wsRegex).where((w) => w.isNotEmpty).length;
+      final wordCount = part.split(_wsRegex).where((w) => w.isNotEmpty).length;
       if (wordCount == 0) continue;
-      sentences.add(_Sentence(
-        text: part,
-        wordStart: wordCursor,
-        wordEnd: wordCursor + wordCount - 1,
-      ));
+      sentences.add(
+        _Sentence(
+          text: part,
+          wordStart: wordCursor,
+          wordEnd: wordCursor + wordCount - 1,
+        ),
+      );
       wordCursor += wordCount;
     }
     _sentenceKeys = List.generate(sentences.length, (_) => GlobalKey());
@@ -1737,6 +1875,7 @@ class _ParagraphHighlightProxyState extends State<_ParagraphHighlightProxy> {
           return currIdx >= 0 && currIdx != prevIdx;
         },
         listener: (context, state) {
+          if (!widget.followVoice.value) return;
           final idx = _activeSentenceIndex(state.currentWordIndex);
           if (idx < 0 || idx >= _sentenceKeys.length) return;
           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1764,9 +1903,10 @@ class _ParagraphHighlightProxyState extends State<_ParagraphHighlightProxy> {
           final activeIdx = state.isTtsActive
               ? _activeSentenceIndex(state.currentWordIndex)
               : -1;
-          final highlight = (widget.accentColor ??
-                  Theme.of(context).colorScheme.primaryContainer)
-              .withValues(alpha: 0.12);
+          final highlight =
+              (widget.accentColor ??
+                      Theme.of(context).colorScheme.primaryContainer)
+                  .withValues(alpha: 0.12);
 
           return Padding(
             padding: padding,
@@ -1779,7 +1919,9 @@ class _ParagraphHighlightProxyState extends State<_ParagraphHighlightProxy> {
                     duration: const Duration(milliseconds: 200),
                     curve: Curves.easeInOut,
                     padding: const EdgeInsets.symmetric(
-                        vertical: 2, horizontal: 6),
+                      vertical: 2,
+                      horizontal: 6,
+                    ),
                     decoration: BoxDecoration(
                       color: i == activeIdx ? highlight : Colors.transparent,
                       borderRadius: BorderRadius.circular(6),
@@ -1850,7 +1992,9 @@ class _ChapterNavBar extends StatelessWidget {
         decoration: BoxDecoration(
           color: background,
           border: Border(
-            top: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+            top: BorderSide(
+              color: Theme.of(context).colorScheme.outlineVariant,
+            ),
           ),
         ),
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
@@ -1940,8 +2084,8 @@ class _VoiceMenuSheetState extends State<_VoiceMenuSheet> {
   TtsCapabilities _caps = kIsWeb
       ? TtsCapabilities.web
       : _isDesktopPlatform
-          ? TtsCapabilities.desktop
-          : TtsCapabilities.mobile;
+      ? TtsCapabilities.desktop
+      : TtsCapabilities.mobile;
 
   static bool get _isDesktopPlatform =>
       defaultTargetPlatform == TargetPlatform.windows ||
@@ -1960,16 +2104,16 @@ class _VoiceMenuSheetState extends State<_VoiceMenuSheet> {
     final all = _caps.supportsVoiceSelection
         ? await sl<DeviceTtsRepository>().getAvailableVoices()
         : const <Map<String, String>>[];
-    final filtered = all.where((v) {
-      final loc = (v['locale'] ?? '').toLowerCase();
-      return loc.startsWith('es') || loc.startsWith('en');
-    }).toList()
-      ..sort((a, b) {
-        final aNeural = _isNeuralVoice(a) ? 0 : 1;
-        final bNeural = _isNeuralVoice(b) ? 0 : 1;
-        if (aNeural != bNeural) return aNeural.compareTo(bNeural);
-        return (a['locale'] ?? '').compareTo(b['locale'] ?? '');
-      });
+    final filtered =
+        all.where((v) {
+          final loc = (v['locale'] ?? '').toLowerCase();
+          return loc.startsWith('es') || loc.startsWith('en');
+        }).toList()..sort((a, b) {
+          final aNeural = _isNeuralVoice(a) ? 0 : 1;
+          final bNeural = _isNeuralVoice(b) ? 0 : 1;
+          if (aNeural != bNeural) return aNeural.compareTo(bNeural);
+          return (a['locale'] ?? '').compareTo(b['locale'] ?? '');
+        });
     if (!mounted) return;
     setState(() {
       _mode = mode;
@@ -1999,7 +2143,11 @@ class _VoiceMenuSheetState extends State<_VoiceMenuSheet> {
     final locale = v['locale'] ?? '';
     final gender = v['gender'];
     final neural = _isNeuralVoice(v) ? 'Neural' : '';
-    final parts = [locale, gender, neural].where((p) => p != null && p.isNotEmpty);
+    final parts = [
+      locale,
+      gender,
+      neural,
+    ].where((p) => p != null && p.isNotEmpty);
     return parts.join(' · ');
   }
 
@@ -2011,8 +2159,10 @@ class _VoiceMenuSheetState extends State<_VoiceMenuSheet> {
 
   bool _isNeuralVoice(Map<String, String> v) {
     final name = (v['name'] ?? '').toLowerCase();
-    return name.contains('natural') || name.contains('neural') ||
-        name.contains('wavenet') || name.contains('neural2');
+    return name.contains('natural') ||
+        name.contains('neural') ||
+        name.contains('wavenet') ||
+        name.contains('neural2');
   }
 
   @override
@@ -2032,9 +2182,10 @@ class _VoiceMenuSheetState extends State<_VoiceMenuSheet> {
               children: [
                 const Padding(
                   padding: EdgeInsets.fromLTRB(20, 16, 20, 8),
-                  child: Text('Voz para audio',
-                      style: TextStyle(
-                          fontSize: 18, fontWeight: FontWeight.w700)),
+                  child: Text(
+                    'Voz para audio',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                  ),
                 ),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
@@ -2042,8 +2193,8 @@ class _VoiceMenuSheetState extends State<_VoiceMenuSheet> {
                     kIsWeb
                         ? 'Voces del navegador'
                         : _caps.supportsEngineQuery
-                            ? 'Voces del dispositivo'
-                            : 'Voces disponibles',
+                        ? 'Voces del dispositivo'
+                        : 'Voces disponibles',
                     style: TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w700,
@@ -2058,8 +2209,7 @@ class _VoiceMenuSheetState extends State<_VoiceMenuSheet> {
                   )
                 else if (!_caps.supportsVoiceSelection)
                   const Padding(
-                    padding:
-                        EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                    padding: EdgeInsets.symmetric(horizontal: 20, vertical: 8),
                     child: Text(
                       'La selección de voz no está disponible en esta plataforma.',
                       style: TextStyle(fontSize: 13),
@@ -2067,34 +2217,33 @@ class _VoiceMenuSheetState extends State<_VoiceMenuSheet> {
                   )
                 else if (_nativeVoices.isEmpty)
                   const Padding(
-                    padding:
-                        EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                    padding: EdgeInsets.symmetric(horizontal: 20, vertical: 8),
                     child: Text(
                       'No hay voces nativas disponibles en este sistema.',
                       style: TextStyle(fontSize: 13),
                     ),
                   )
-          else
-            for (final v in _nativeVoices)
-              ListTile(
-                dense: true,
-                leading: Icon(
-                  _isNeuralVoice(v)
-                      ? Icons.auto_awesome_rounded
-                      : _isDesktopPlatform
-                          ? Icons.desktop_windows_rounded
-                          : Icons.phone_android_rounded,
-                  color: _isNativeSelected(v) && _mode == TtsMode.device
-                      ? Theme.of(context).colorScheme.primary
-                      : null,
-                ),
-                title: Text(v['name'] ?? '—'),
-                subtitle: Text(_voiceSubtitle(v)),
-                trailing: _isNativeSelected(v) && _mode == TtsMode.device
-                    ? const Icon(Icons.check_rounded)
-                    : null,
-                onTap: () => _selectNative(v),
-              ),
+                else
+                  for (final v in _nativeVoices)
+                    ListTile(
+                      dense: true,
+                      leading: Icon(
+                        _isNeuralVoice(v)
+                            ? Icons.auto_awesome_rounded
+                            : _isDesktopPlatform
+                            ? Icons.desktop_windows_rounded
+                            : Icons.phone_android_rounded,
+                        color: _isNativeSelected(v) && _mode == TtsMode.device
+                            ? Theme.of(context).colorScheme.primary
+                            : null,
+                      ),
+                      title: Text(v['name'] ?? '—'),
+                      subtitle: Text(_voiceSubtitle(v)),
+                      trailing: _isNativeSelected(v) && _mode == TtsMode.device
+                          ? const Icon(Icons.check_rounded)
+                          : null,
+                      onTap: () => _selectNative(v),
+                    ),
                 const Divider(height: 1),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
@@ -2122,10 +2271,19 @@ class _VoiceMenuSheetState extends State<_VoiceMenuSheet> {
                 for (final tip in _voiceTips)
                   ListTile(
                     dense: true,
-                    leading: Icon(tip.icon, size: 20,
-                      color: Theme.of(context).colorScheme.onSurfaceVariant),
-                    title: Text(tip.title, style: const TextStyle(fontSize: 13)),
-                    subtitle: Text(tip.subtitle, style: const TextStyle(fontSize: 11)),
+                    leading: Icon(
+                      tip.icon,
+                      size: 20,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                    title: Text(
+                      tip.title,
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                    subtitle: Text(
+                      tip.subtitle,
+                      style: const TextStyle(fontSize: 11),
+                    ),
                     visualDensity: VisualDensity.compact,
                   ),
                 const Divider(height: 1),
@@ -2208,8 +2366,11 @@ class _InlineSpeedBarState extends State<_InlineSpeedBar> {
       ),
       child: Row(
         children: [
-          Icon(Icons.slow_motion_video_rounded, size: 18,
-              color: widget.foreground.withValues(alpha: 0.7)),
+          Icon(
+            Icons.slow_motion_video_rounded,
+            size: 18,
+            color: widget.foreground.withValues(alpha: 0.7),
+          ),
           const SizedBox(width: 4),
           Expanded(
             child: SliderTheme(
@@ -2250,8 +2411,10 @@ class _InlineSpeedBarState extends State<_InlineSpeedBar> {
             constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
             tooltip: 'Ocultar',
             onPressed: widget.onClose,
-            icon: Icon(Icons.close_rounded,
-                color: widget.foreground.withValues(alpha: 0.6)),
+            icon: Icon(
+              Icons.close_rounded,
+              color: widget.foreground.withValues(alpha: 0.6),
+            ),
           ),
         ],
       ),
@@ -2404,9 +2567,10 @@ class _TtsSpeedSelectorState extends State<_TtsSpeedSelector> {
               const Icon(Icons.speed_rounded, size: 20),
               const SizedBox(width: 12),
               Expanded(
-                child: Text('Velocidad de lectura',
-                    style:
-                        TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                child: Text(
+                  'Velocidad de lectura',
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                ),
               ),
             ],
           ),
@@ -2449,49 +2613,88 @@ class _VoiceTip {
 List<_VoiceTip> get _voiceTips {
   if (kIsWeb) {
     return const [
-      _VoiceTip(Icons.web, 'Chrome/Edge',
-          'Instala voces del SO; Chrome las detecta automáticamente'),
-      _VoiceTip(Icons.travel_explore, 'Firefox',
-          'about:config → media.webspeech.synth.enabled = true'),
-      _VoiceTip(Icons.auto_awesome, 'Tip',
-          'Las voces "Neural", "Natural" o "Enhanced" suenan mucho mejor que las estándar'),
+      _VoiceTip(
+        Icons.web,
+        'Chrome/Edge',
+        'Instala voces del SO; Chrome las detecta automáticamente',
+      ),
+      _VoiceTip(
+        Icons.travel_explore,
+        'Firefox',
+        'about:config → media.webspeech.synth.enabled = true',
+      ),
+      _VoiceTip(
+        Icons.auto_awesome,
+        'Tip',
+        'Las voces "Neural", "Natural" o "Enhanced" suenan mucho mejor que las estándar',
+      ),
     ];
   }
   switch (defaultTargetPlatform) {
     case TargetPlatform.windows:
       return const [
-        _VoiceTip(Icons.desktop_windows, 'Windows',
-            'Configuración → Hora e idioma → Voz → Añadir voces (Natural Voices)'),
-        _VoiceTip(Icons.auto_awesome, 'Tip',
-            'Las voces "Neural", "Natural" o "Enhanced" suenan mucho mejor que las estándar'),
+        _VoiceTip(
+          Icons.desktop_windows,
+          'Windows',
+          'Configuración → Hora e idioma → Voz → Añadir voces (Natural Voices)',
+        ),
+        _VoiceTip(
+          Icons.auto_awesome,
+          'Tip',
+          'Las voces "Neural", "Natural" o "Enhanced" suenan mucho mejor que las estándar',
+        ),
       ];
     case TargetPlatform.macOS:
       return const [
-        _VoiceTip(Icons.desktop_mac, 'macOS',
-            'Ajustes del Sistema → Accesibilidad → Contenido hablado → Voces → Descargar "Enhanced"'),
-        _VoiceTip(Icons.auto_awesome, 'Tip',
-            'Las voces "Neural", "Natural" o "Enhanced" suenan mucho mejor que las estándar'),
+        _VoiceTip(
+          Icons.desktop_mac,
+          'macOS',
+          'Ajustes del Sistema → Accesibilidad → Contenido hablado → Voces → Descargar "Enhanced"',
+        ),
+        _VoiceTip(
+          Icons.auto_awesome,
+          'Tip',
+          'Las voces "Neural", "Natural" o "Enhanced" suenan mucho mejor que las estándar',
+        ),
       ];
     case TargetPlatform.linux:
       return const [
-        _VoiceTip(Icons.computer, 'Linux',
-            'Instala espeak-ng o speech-dispatcher con voces adicionales'),
-        _VoiceTip(Icons.auto_awesome, 'Tip',
-            'Las voces "Neural", "Natural" o "Enhanced" suenan mucho mejor que las estándar'),
+        _VoiceTip(
+          Icons.computer,
+          'Linux',
+          'Instala espeak-ng o speech-dispatcher con voces adicionales',
+        ),
+        _VoiceTip(
+          Icons.auto_awesome,
+          'Tip',
+          'Las voces "Neural", "Natural" o "Enhanced" suenan mucho mejor que las estándar',
+        ),
       ];
     case TargetPlatform.iOS:
       return const [
-        _VoiceTip(Icons.phone_iphone, 'iOS',
-            'Ajustes → Accesibilidad → Contenido hablado → Voces → Descargar "Enhanced"'),
-        _VoiceTip(Icons.auto_awesome, 'Tip',
-            'Las voces "Neural", "Natural" o "Enhanced" suenan mucho mejor que las estándar'),
+        _VoiceTip(
+          Icons.phone_iphone,
+          'iOS',
+          'Ajustes → Accesibilidad → Contenido hablado → Voces → Descargar "Enhanced"',
+        ),
+        _VoiceTip(
+          Icons.auto_awesome,
+          'Tip',
+          'Las voces "Neural", "Natural" o "Enhanced" suenan mucho mejor que las estándar',
+        ),
       ];
     default:
       return const [
-        _VoiceTip(Icons.phone_android, 'Android',
-            'Ajustes → Sistema → Idioma → TTS → Instalar voces de Google (Neural2)'),
-        _VoiceTip(Icons.auto_awesome, 'Tip',
-            'Las voces "Neural", "Natural" o "Enhanced" suenan mucho mejor que las estándar'),
+        _VoiceTip(
+          Icons.phone_android,
+          'Android',
+          'Ajustes → Sistema → Idioma → TTS → Instalar voces de Google (Neural2)',
+        ),
+        _VoiceTip(
+          Icons.auto_awesome,
+          'Tip',
+          'Las voces "Neural", "Natural" o "Enhanced" suenan mucho mejor que las estándar',
+        ),
       ];
   }
 }
