@@ -238,7 +238,8 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
 
   void _scrollToParagraph(int currentWordIndex) {
     if (!_followVoice.value) return;
-    if (_scrollController == null || !_scrollController!.hasClients) return;
+    final ctrl = _scrollController;
+    if (ctrl == null || !ctrl.hasClients) return;
     if (_wordOffsets.isEmpty || _paragraphKeys.isEmpty) return;
 
     final paraIndex = _findParagraphIndex(currentWordIndex, _wordOffsets);
@@ -250,14 +251,35 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
     _lastScrolledParagraphIndex = paraIndex;
 
     final keyContext = _paragraphKeys[paraIndex].currentContext;
-    if (keyContext == null) return;
+    if (keyContext != null) {
+      Scrollable.ensureVisible(
+        keyContext,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOutCubic,
+        alignment: 0.3,
+      );
+      return;
+    }
 
-    Scrollable.ensureVisible(
-      keyContext,
-      duration: const Duration(milliseconds: 300),
-      curve: Curves.easeOutCubic,
-      alignment: 0.3,
-    );
+    // El párrafo objetivo no está construido: el ListView.builder lo descartó
+    // porque el usuario scrolleó lejos. ensureVisible necesita un widget
+    // montado, así que saltamos a una posición aproximada (proporcional al
+    // índice) para que el ListView lo construya, y lo centramos con precisión
+    // en el frame siguiente.
+    final frac = paraIndex / _paragraphKeys.length;
+    final max = ctrl.position.maxScrollExtent;
+    ctrl.jumpTo((frac * max).clamp(0.0, max));
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_disposed || !mounted || paraIndex >= _paragraphKeys.length) return;
+      final ctx = _paragraphKeys[paraIndex].currentContext;
+      if (ctx == null) return;
+      Scrollable.ensureVisible(
+        ctx,
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOutCubic,
+        alignment: 0.3,
+      );
+    });
   }
 
   void _updateWordOffsets(List<int> offsets) {
