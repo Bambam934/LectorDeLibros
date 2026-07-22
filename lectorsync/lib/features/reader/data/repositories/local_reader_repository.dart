@@ -227,15 +227,15 @@ class LocalReaderRepository implements ReaderRepository {
   }
 
   String _chaptersCachePathFor(String storedPath) {
-    // Para `/path/{id}.pdf` → `/path/{id}.chapters.v2.json`
+    // Para `/path/{id}.pdf` → `/path/{id}.chapters.v3.json`
     //
-    // El sufijo de versión invalida las cachés generadas por parsers
-    // anteriores. v2 (2026-07-19): se añadió el reflow de texto, así que
-    // el contenido cacheado por v1 conserva los saltos de maquetación y
-    // debe re-parsearse.
+    // El sufijo de versión invalida las cachés de parsers anteriores.
+    // v2 (2026-07-19): reflow de texto. v3 (2026-07-21): stripPdfNoise
+    // (índice + encabezados/pies repetidos). Subir esta versión al cambiar
+    // cualquier parser, o el fix no se ve en libros ya importados.
     final dot = storedPath.lastIndexOf('.');
     final base = dot > 0 ? storedPath.substring(0, dot) : storedPath;
-    return '$base.chapters.v2.json';
+    return '$base.chapters.v3.json';
   }
 
   // ---------- format parsers ----------
@@ -255,7 +255,7 @@ class LocalReaderRepository implements ReaderRepository {
         final pageText = extractor.extractText(startPageIndex: i, endPageIndex: i);
         pages.add(pageText);
       }
-      final fullText = pages.join('\n\n');
+      final fullText = stripPdfNoise(pages.join('\n\n'));
       return _splitByWordCount(fullText);
     } finally {
       document.dispose();
@@ -372,6 +372,57 @@ class LocalReaderRepository implements ReaderRepository {
     }
 
     return rebuilt.join('\n\n');
+  }
+
+  /// Limpia el ruido típico de la extracción de PDF que ensucia la lectura
+  /// (validado 2026-07-21 contra un libro de cálculo real):
+  ///
+  /// - **Índice / tabla de contenidos**: párrafos con relleno de puntos
+  ///   ("Capítulo 1 ............ 19").
+  /// - **Encabezados/pies repetidos**: el título de sección o el nombre del
+  ///   autor que el PDF imprime en cada página, con el número de página
+  ///   pegado ("FERNANDO ARAUJO RODRÍGUEZ20", "INTEGRAL DEFINIDA81"). Se
+  ///   quitan SOLO si el mismo prefijo en mayúsculas se repite en ≥3
+  ///   páginas, para no borrar texto legítimo que coincida una única vez.
+  ///
+  /// Opera sobre el texto COMPLETO del libro (páginas unidas por línea en
+  /// blanco), porque detectar los encabezados exige ver la repetición.
+  /// NO toca las ecuaciones: un PDF matemático seguirá teniendo el texto de
+  /// sus fórmulas aplanado (eso requiere otra estrategia).
+  static String stripPdfNoise(String text) {
+    final paras = text.split(RegExp(r'\n[ \t]*\n'));
+    final headerRe = RegExp(
+        r'^([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ ]{4,}?)\d{1,4}(?=\s|[A-Za-zÁÉÍÓÚÑáéíóúñ])');
+    final indexRe = RegExp(r'\.{5,}');
+
+    // 1) Contar prefijos de encabezado; nos quedamos con los repetidos.
+    final counts = <String, int>{};
+    for (final p in paras) {
+      final m = headerRe.firstMatch(p.trimLeft());
+      if (m != null) {
+        final h = m.group(1)!.trim();
+        counts[h] = (counts[h] ?? 0) + 1;
+      }
+    }
+    final headers = <String>{
+      for (final e in counts.entries)
+        if (e.value >= 3) e.key,
+    };
+
+    // 2) Descartar párrafos de índice y recortar el encabezado repetido.
+    final cleaned = <String>[];
+    for (final p in paras) {
+      final t = p.trim();
+      if (t.isEmpty) continue;
+      if (indexRe.hasMatch(t)) continue;
+      var body = t;
+      final m = headerRe.firstMatch(body);
+      if (m != null && headers.contains(m.group(1)!.trim())) {
+        body = body.substring(m.end).trim();
+      }
+      if (body.isNotEmpty) cleaned.add(body);
+    }
+    return cleaned.join('\n\n');
   }
 
   /// Divide texto plano en capítulos de aproximadamente
