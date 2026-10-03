@@ -1,6 +1,6 @@
 # Decisiones de Arquitectura de LectorSync (ADRs)
 
-*Última actualización: 2026-08-11 · Estado: rama `desarrollo` · `main` estable*
+*Última actualización: 2026-10-03 · Estado: rama `desarrollo` · `main` estable*
 
 Este documento registra las decisiones técnicas vigentes y por qué se tomaron. Para el estado detallado de features y la bitácora de sesiones, ver la memoria del proyecto (`~/.claude/projects/.../memory/project_state.md`) y el agente `.claude/agents/lectorsync-expert.md`.
 
@@ -109,3 +109,26 @@ Uso estricto de `ColorScheme` (`surface`, nunca la deprecada `background`). Modo
 
 - **Backend**: Docker multi-stage (`node:22-alpine`, usuario no-root, healthcheck) + `docker-compose.yml` (backend en `:3000` a LAN, Postgres solo en `127.0.0.1`).
 - **Android**: APK universal firmado (keystore propio gitignored). Diagnóstico de instalación siempre con `adb install` — el instalador gráfico oculta el error real (ver agente, Session 18).
+- **HTTP sin cifrar solo en debug** (2026-10-03): la configuración que lo permite hacia cualquier IP de la LAN vive en `android/app/src/debug/res/xml/network_security_config.xml`; la de `src/main` (release) solo lo admite hacia el emulador, `localhost` y `192.168.0.7`, y lo prohíbe explícitamente en el `base-config` porque en Android 7-8 el valor por defecto es permitirlo. Antes la permisiva viajaba en el APK de release: en modo conectado, la contraseña y el refresh token cruzaban la Wi-Fi en claro.
+
+## 12. Modo concentración y lectura en segundo plano (2026-10-03)
+
+Diseñado con `/diseñar` y aprobado por secciones. Dos funciones que comparten una pieza: un único controlador decide a partir de la misma señal, *si la voz está sonando*.
+
+**Modo concentración** (`features/reader/presentation/reading_focus_controller.dart`): pantalla completa de verdad y, donde se puede, el "No molestar" del sistema.
+
+- **Se entra explícitamente**: botón en la barra (menú ⋮ en el móvil) o F11; se sale con el mismo botón, Atrás, Esc, F11 o cerrando el libro. El toque sobre el texto sigue alternando solo los controles del lector: colgar de ahí el silencio lo encendería y apagaría con cada toque. No se recuerda entre sesiones.
+- **Regla única**: `silencio = pantalla completa ∧ (app visible ∨ voz sonando)`. El silencio sigue con la pantalla apagada mientras la voz lee; se quita al pausarla (con 3 s de margen, para que pasar de capítulo no lo quite y lo vuelva a poner), al salir o al cerrar el libro. Quitarlo nunca depende de que algo salga bien: el estado se marca apagado antes de pedírselo al sistema.
+- **Android 10+**: una `AutomaticZenRule` propia ("Lectura (LectorSync)", `ReadingQuietMode.kt`) con filtro PRIORITY —pasan las excepciones del usuario— y `ZenPolicy.allowMedia(true)`, porque si no silenciaría la propia voz. Permiso "Acceso a No molestar" explicado la primera vez, con "No volver a preguntar". **Descartado el filtro global** (`setInterruptionFilter`): al salir apagaba también los modos automáticos del usuario que hubieran empezado entretanto, se quedaba puesto si la app moría y cambia de comportamiento con targetSdk ≥ 35.
+- **Red de seguridad**: la regla se apaga al arrancar cada proceso, desde `MainActivity.kt` y no desde Dart: el motor de audio_service ejecuta `main()` antes de que la actividad registre el canal, y la llamada desde Dart se perdería en silencio. **Descartado el temporizador de seguridad** (alarma que apaga la regla aunque la app muera): solo cubre una caída en primer plano, y el icono de No molestar queda a la vista en ese caso.
+- **Windows**: no hay API soportada (`FocusSessionManager` exige un token que concede Microsoft). La pantalla completa la pone `window_manager` y un aviso único lleva a la regla nativa de Windows "Activar No molestar al usar una app en pantalla completa". **iOS y web**: solo pantalla completa (no hay API pública). macOS y Linux no tienen carpeta en el repo.
+- **Límite conocido**: en Android 15+ la regla copia las excepciones al crearse y puede no coincidir del todo con las del usuario; se ajusta editando el modo en Ajustes. En Android 10-14 hereda las del usuario en vivo.
+
+**Lectura en segundo plano** (`features/reader/presentation/background/reading_audio_handler.dart`): la voz sigue con la pantalla apagada o en otra app, como un audiolibro.
+
+- **audio_service**: servicio de reproducción en primer plano con notificación "Leyendo · título", controles en la pantalla de bloqueo y en los auriculares. Es lo que impide que Android duerma la CPU entre frases o cierre la app. **Descartado "solo no pararla"** (quitar la parada en `paused`): Android cortaría la lectura a los pocos minutos. **Descartado un servicio propio en Kotlin**: más código nativo propio y sin controles de medios.
+- **`androidStopForegroundOnPause: false`** (desviación forzada del diseño): en Android 12+ volver a poner en primer plano un servicio desde segundo plano lanza `ForegroundServiceStartNotAllowedException`. El servicio se queda en primer plano también en pausa, así que la notificación pausada no se descarta deslizándola sino con su ✕.
+- **audio_session**: pausa al desconectar los auriculares o con una llamada; no con un aviso que solo baja el volumen (`duck`). No se reanuda sola. El foco de audio solo se pide mientras la voz suena.
+- **Si el servicio no arranca** (cualquier plataforma que no sea Android, o un fallo), no se registra y el lector vuelve a parar la voz en segundo plano: nunca queda a medio funcionar.
+
+Pendiente de verificar en dispositivo (no hay pruebas automáticas posibles): todo lo que toca el sistema —icono de No molestar, notificaciones silenciadas, voz audible con la regla puesta, lectura de más de 10 minutos con la pantalla apagada cruzando capítulos, controles de bloqueo y auriculares, pausa con llamadas y al desconectar los auriculares— y en Windows, entrar y salir de pantalla completa sin los fallos conocidos de `window_manager`.
