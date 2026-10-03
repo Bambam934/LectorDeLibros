@@ -227,15 +227,17 @@ class LocalReaderRepository implements ReaderRepository {
   }
 
   String _chaptersCachePathFor(String storedPath) {
-    // Para `/path/{id}.pdf` → `/path/{id}.chapters.v3.json`
+    // Para `/path/{id}.pdf` → `/path/{id}.chapters.v4.json`
     //
     // El sufijo de versión invalida las cachés de parsers anteriores.
     // v2 (2026-07-19): reflow de texto. v3 (2026-07-21): stripPdfNoise
-    // (índice + encabezados/pies repetidos). Subir esta versión al cambiar
-    // cualquier parser, o el fix no se ve en libros ya importados.
+    // (índice + encabezados/pies repetidos). v4 (2026-10-02): stripPdfNoise
+    // deja de borrar los rótulos numerados en mayúsculas ("EJEMPLO 3").
+    // Subir esta versión al cambiar cualquier parser, o el fix no se ve en
+    // libros ya importados.
     final dot = storedPath.lastIndexOf('.');
     final base = dot > 0 ? storedPath.substring(0, dot) : storedPath;
-    return '$base.chapters.v3.json';
+    return '$base.chapters.v4.json';
   }
 
   // ---------- format parsers ----------
@@ -391,8 +393,16 @@ class LocalReaderRepository implements ReaderRepository {
   /// sus fórmulas aplanado (eso requiere otra estrategia).
   static String stripPdfNoise(String text) {
     final paras = text.split(RegExp(r'\n[ \t]*\n'));
+    // El último carácter del prefijo tiene que ser una mayúscula, no un
+    // espacio: el número de página va PEGADO al encabezado ("RODRÍGUEZ20").
+    // Sin esa exigencia la clase perezosa `[A-ZÁÉÍÓÚÑ ]` cruzaba el espacio
+    // hasta el primer dígito, y "EJEMPLO 3", "TEOREMA 4" o "CAPÍTULO 1"
+    // casaban con el prefijo "EJEMPLO ": tres apariciones bastaban para
+    // borrar el rótulo de todas. Separado por espacio es numeración del
+    // propio libro y se conserva. Mismo arreglo que `HEADER_RE` en
+    // `backend/src/core/parsers/pdf-cleanup.ts`.
     final headerRe = RegExp(
-        r'^([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ ]{4,}?)\d{1,4}(?=\s|[A-Za-zÁÉÍÓÚÑáéíóúñ])');
+        r'^([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ ]{3,}?[A-ZÁÉÍÓÚÑ])\d{1,4}(?=\s|[A-Za-zÁÉÍÓÚÑáéíóúñ])');
     final indexRe = RegExp(r'\.{5,}');
 
     // 1) Contar prefijos de encabezado; nos quedamos con los repetidos.

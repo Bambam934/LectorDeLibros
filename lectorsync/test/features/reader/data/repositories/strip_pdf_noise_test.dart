@@ -55,5 +55,39 @@ void main() {
       const raw = 'Primer párrafo normal.\n\nSegundo párrafo normal.';
       expect(LocalReaderRepository.stripPdfNoise(raw), raw);
     });
+
+    test('NO borra los rótulos numerados aunque se repitan', () {
+      // Regresión (2026-10-02): la clase perezosa del prefijo incluía el
+      // espacio, así que "EJEMPLO 3" casaba con el prefijo "EJEMPLO " y, en
+      // cuanto aparecía tres veces, el rótulo desaparecía de todos los
+      // párrafos. En un libro de cálculo eso borra cada "EJEMPLO n",
+      // "TEOREMA n" y "CAPÍTULO n" del texto que se lee.
+      final raw = [
+        'EJEMPLO 1 Calcule la integral de x.',
+        'EJEMPLO 2 Calcule la derivada de x al cuadrado.',
+        'EJEMPLO 3 Halle el área bajo la curva.',
+        'CAPÍTULO 1 La derivada mide el cambio.',
+        'CAPÍTULO 2 La integral acumula.',
+        'CAPÍTULO 3 El límite se aproxima.',
+      ].join('\n\n');
+
+      final out = LocalReaderRepository.stripPdfNoise(raw);
+
+      expect(out, raw);
+    });
+
+    test('sigue recortando el encabezado con el número pegado', () {
+      // La otra cara del arreglo: lo que SÍ es ruido de página se quita.
+      final raw = [
+        'CÁLCULO INTEGRAL10 Primera página del capítulo.',
+        'CÁLCULO INTEGRAL11 Segunda página.',
+        'CÁLCULO INTEGRAL12 Tercera página.',
+      ].join('\n\n');
+
+      final out = LocalReaderRepository.stripPdfNoise(raw);
+
+      expect(out, isNot(contains('CÁLCULO INTEGRAL')));
+      expect(out, contains('Primera página del capítulo.'));
+    });
   });
 }
