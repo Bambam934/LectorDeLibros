@@ -9,6 +9,7 @@ import '../../../../core/storage/local_book_store.dart';
 import '../../domain/entities/chapter.dart';
 import '../../domain/entities/chapter_audio.dart';
 import '../../domain/repositories/reader_repository.dart';
+import '../parsing/text_decoding.dart';
 
 /// Offline-first reader repository.
 ///
@@ -17,7 +18,8 @@ import '../../domain/repositories/reader_repository.dart';
 ///
 /// - **PDF**: usa Syncfusion PdfTextExtractor para extraer texto y lo
 ///   divide en capítulos por tamaño (~3000 palabras cada uno).
-/// - **TXT / MD**: lee el archivo como UTF-8 e intenta detectar encabezados
+/// - **TXT / MD**: lee el archivo como UTF-8 (o Windows-1252 si no lo es,
+///   ver [decodeTextBytes]) e intenta detectar encabezados
 ///   ("Capítulo X", "Chapter X", "# Título" en markdown) para los cortes.
 ///   Si no encuentra estructura, cae al modo por tamaño.
 /// - **EPUB**: no soportado en esta primera iteración offline; devuelve
@@ -189,11 +191,11 @@ class LocalReaderRepository implements ReaderRepository {
         chapters = await _parsePdf(file);
         break;
       case 'txt':
-        chapters = _parseTextLike(await file.readAsString());
+        chapters = _parseTextLike(decodeTextBytes(await file.readAsBytes()));
         break;
       case 'md':
       case 'markdown':
-        chapters = _parseMarkdown(await file.readAsString());
+        chapters = _parseMarkdown(decodeTextBytes(await file.readAsBytes()));
         break;
       case 'epub':
         throw _ReaderError(FileFailure(
