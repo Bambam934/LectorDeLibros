@@ -284,8 +284,10 @@ class ReaderBloc extends Bloc<ReaderEvent, ReaderState> {
         'autoPlayTts=${event.autoPlayTts} '
         'currentIdx=${state.currentChapterIndex}→$targetIndex');
 
-    // Stop TTS before switching chapter.
-    if (state.isTtsActive) await _ttsRepository.stop();
+    // Stop TTS before switching chapter — incondicional por el mismo motivo
+    // que en `close()`: el status del motor llega por stream y puede ir por
+    // detrás del estado del bloc.
+    await _ttsRepository.stop();
     _resetTtsTimer();
 
     await _persistProgress();
@@ -810,7 +812,13 @@ class ReaderBloc extends Bloc<ReaderEvent, ReaderState> {
     _ttsWordSub?.cancel();
     _ttsStatusSub?.cancel();
     await _syncSub?.cancel();
-    if (state.isTtsActive) await _ttsRepository.stop();
+    // Parada INCONDICIONAL: antes esto era `if (state.isTtsActive)`, y como
+    // `isTtsActive` solo cubre `playing|loading`, bastaba un desfase entre el
+    // estado del bloc y el motor (el status llega por stream, siempre va un
+    // paso por detrás) para salir del lector con la voz todavía hablando.
+    // `stop()` sobre un motor ya parado es un no-op barato, así que la guarda
+    // solo aportaba el bug.
+    await _ttsRepository.stop();
     await _persistProgress();
     await super.close();
   }

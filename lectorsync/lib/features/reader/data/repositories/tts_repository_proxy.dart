@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:fpdart/fpdart.dart';
 
 import '../../../../core/di/injection_container.dart' show TtsMode;
@@ -30,12 +31,27 @@ class TtsRepositoryProxy implements TtsRepository {
   StreamSubscription<void>? _recoverySub;
 
   static const _frameIntervalMs = 16;
+  /// Delta a partir del cual un salto deja de tratarse como progreso normal.
+  /// Por debajo basta con el acelerador de 16 ms.
   static const _catchUpThreshold = 50;
 
   /// FIX H3 — walking more than [_catchUpMaxSteps] words at 16 ms/word
   /// produces a visible multi-second fast-forward that the user perceives
   /// as "se salta varios párrafos". Beyond this limit we snap directly to
   /// the target instead of walking intermediate words.
+  ///
+  /// **`_catchUpMaxSteps` (30) es MENOR que `_catchUpThreshold` (50) a
+  /// propósito, y por eso `_startCatchUp` no llega a ejecutarse nunca.** Todo
+  /// delta que activa el catch-up supera también este límite, así que siempre
+  /// se hace snap. No es un descuido: caminar solo compensa en saltos
+  /// pequeños, y esos ni siquiera cruzan el umbral. El código del paseo se
+  /// conserva por si algún día se quiere afinar la horquilla —subiendo
+  /// `_catchUpMaxSteps` POR ENCIMA del umbral—, y
+  /// `proxy_catch_up_max_steps_test.dart` fija los dos comportamientos.
+  ///
+  /// Si vienes a "arreglar" esta relación entre constantes: activar el paseo
+  /// es un cambio de producto sobre el seguidor de palabras, con su propio
+  /// riesgo, no una corrección.
   static const _catchUpMaxSteps = 30;
 
   Timer? _wordFrameTimer;
@@ -92,15 +108,21 @@ class TtsRepositoryProxy implements TtsRepository {
   _wordSub = repo.wordIndexStream.listen((idx) {
     if (_wordCtrl.isClosed) return;
 
-    // FIX — debug assert for anomalous wordIndex deltas. A delta > 200
-    // between consecutive events almost always means a tracker overshoot
-    // or a stale-utterance leak. Catches the "se salta varios párrafos"
-    // class of bugs early in development.
     final delta = idx - _lastEmittedWordIdx;
-    if (_lastEmittedWordIdx >= 0) {
-      assert(delta < 200, '[Proxy] anomalous wordIndex delta=$delta '
-          'last=$_lastEmittedWordIdx new=$idx');
-    }
+    // Un delta grande = reposicionamiento del usuario (slider, marcador, botón
+    // "volver a la lectura"), NO un salto espurio del tracker. Antes esto era
+    // `assert(delta < 200)` que LANZABA en bucle: la excepción cortaba el
+    // listener antes de actualizar `_lastEmittedWordIdx` (abajo), que quedaba
+    // congelado y cada palabra siguiente volvía a fallar con delta creciente.
+    // La lógica de snap de más abajo ya maneja los saltos grandes; aquí solo
+    // dejamos rastro en debug, sin romper el flujo.
+    assert(() {
+      if (_lastEmittedWordIdx >= 0 && delta.abs() >= 200) {
+        debugPrint('[Proxy] salto grande de wordIndex delta=$delta '
+            'last=$_lastEmittedWordIdx new=$idx (reposicionamiento)');
+      }
+      return true;
+    }());
 
     // FIX 35 — first real progress event from the recovered segment
     // unfreezes the throttle. The catch-up rewrite below still applies.
