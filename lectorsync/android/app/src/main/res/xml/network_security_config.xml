@@ -1,21 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Configuración de RELEASE (y profile). La de desarrollo, que permite HTTP
+  hacia cualquier IP de la LAN, vive en src/debug/res/xml/ y solo entra en
+  las builds de `flutter run`.
+
+  Aquí el HTTP sin cifrar se prohíbe de forma explícita en el base-config:
+  en Android 7 y 8 (minSdk 24) el valor por defecto es PERMITIRLO, así que
+  omitirlo no bastaría. Solo quedan las excepciones de desarrollo con IP fija.
+-->
 <network-security-config>
-    <!-- Permite HTTP hacia el emulador Android (10.0.2.2 = localhost del host) -->
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">10.0.2.2</domain>
-    </domain-config>
-    <!-- Permite HTTP en dispositivo físico conectado por USB (localhost) -->
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">localhost</domain>
-    </domain-config>
-    <!-- DEV: backend Node.js en la red local (PC del desarrollador) -->
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">192.168.0.7</domain>
-    </domain-config>
-    <!-- DEV: permite cualquier IP privada de la LAN para pruebas en celulares -->
-    <base-config cleartextTrafficPermitted="true">
+    <base-config cleartextTrafficPermitted="false">
         <trust-anchors>
             <certificates src="system" />
         </trust-anchors>
     </base-config>
+    <!-- Emulador Android (10.0.2.2 = localhost del host) -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+    <!-- Dispositivo físico conectado por USB con `adb reverse` -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+    <!-- Backend de desarrollo en la red local (PC del desarrollador) -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">192.168.0.7</domain>
+    </domain-config>
 </network-security-config>

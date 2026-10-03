@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SOLO DEBUG (`flutter run`): sustituye al de src/main en las builds de
+  desarrollo. Permite HTTP sin cifrar hacia cualquier destino para poder
+  probar contra el backend en cualquier IP de la LAN sin tocar esta lista.
+
+  En release NO aplica: allí rige src/main/res/xml/network_security_config.xml,
+  que solo admite HTTP hacia el emulador, localhost y la IP de desarrollo.
+  Antes esta configuración permisiva estaba en main y viajaba en el APK de
+  release: en modo conectado, la contraseña y el refresh token (30 días)
+  cruzaban la Wi-Fi en claro hacia cualquier dominio.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
