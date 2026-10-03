@@ -152,6 +152,32 @@ This is the second chapter with more content.`;
     assert.ok(result.chapters.length >= 2);
   });
 
+  it('converts links whose URL has parentheses without leaving a stray ")"', async () => {
+    const md = 'Mira [este artículo](https://es.wikipedia.org/wiki/C_(lenguaje)) ahora.';
+    const book = await parseBookFile(Buffer.from(md), 'md');
+    const text = book.chapters[0]!.text;
+
+    assert.match(text, /Mira este artículo ahora\./);
+  });
+
+  it('drops images instead of leaving "!alt" for the voice to read', async () => {
+    const book = await parseBookFile(Buffer.from('Antes ![una foto](img.png) después.'), 'md');
+    const text = book.chapters[0]!.text;
+
+    assert.ok(!text.includes('!'), `quedó: ${text}`);
+    assert.ok(!text.includes('una foto'), `quedó: ${text}`);
+  });
+
+  it('strips links in linear time with many unclosed "["', async () => {
+    // Regresión de seguridad (2026-10-03): el patrón anterior recorría hasta
+    // el final desde cada "[" sin cerrar (cuadrático, medido).
+    const t0 = performance.now();
+    await parseBookFile(Buffer.from('Hola ' + '[a'.repeat(200_000)), 'md').catch(() => undefined);
+    const ms = performance.now() - t0;
+
+    assert.ok(ms < 2000, `tardó ${ms.toFixed(0)} ms`);
+  });
+
   it('strips Markdown syntax in md mode', async () => {
     const content = `# Title
 

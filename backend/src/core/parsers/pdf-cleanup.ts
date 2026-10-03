@@ -39,6 +39,9 @@ const HEADER_RE =
 /** Entrada de tabla de contenidos: "Capítulo 1 .......... 19". */
 const INDEX_ENTRY_RE = /[^.]{0,120}?\.{5,}\s*\d{1,4}\s*/g;
 
+/** Racha de cinco o más puntos: se colapsa antes de buscar entradas de índice. */
+const DOT_RUN_RE = /\.{5,}/g;
+
 /** Palabra partida por el corte de línea: "consu- mismo" → "consumismo". */
 const SOFT_HYPHEN_RE = /(\p{Ll})-\s+(\p{Ll})/gu;
 
@@ -66,7 +69,18 @@ export function reflowPageText(pageText: string): string {
  * puede compartir página con el inicio del primer capítulo.
  */
 export function stripIndexEntries(pageText: string): string {
-  return pageText.replace(INDEX_ENTRY_RE, ' ').replace(/\s+/g, ' ').trim();
+  return pageText
+    // Colapsar antes las rachas de puntos es lo que mantiene LINEAL a
+    // INDEX_ENTRY_RE. Con una racha larga SIN número detrás, `\.{5,}` se la
+    // tragaba entera, fallaba en `\d` y retrocedía, y eso desde cada posición:
+    // coste cuadrático en el event loop (medido: 32.000 puntos = 1,7 s, ×3,6
+    // al duplicar). Bastaba un PDF subido por cualquier usuario con cuenta
+    // para dejar el backend sin responder. Con rachas de cinco, cada intento
+    // es corto. El índice legítimo no cambia: sigue terminando en número.
+    .replace(DOT_RUN_RE, '.....')
+    .replace(INDEX_ENTRY_RE, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /**

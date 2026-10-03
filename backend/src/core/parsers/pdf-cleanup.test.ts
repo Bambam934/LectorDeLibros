@@ -39,6 +39,23 @@ describe('pdf-cleanup — stripIndexEntries', () => {
     const page = 'Y entonces... 42 sigue siendo la respuesta.';
     assert.equal(stripIndexEntries(page), page);
   });
+
+  it('procesa en tiempo lineal una racha enorme de puntos sin número', () => {
+    // Regresión de seguridad (2026-10-03): `\.{5,}` se tragaba la racha,
+    // fallaba en `\d` y retrocedía desde cada posición. 32.000 puntos ya
+    // bloqueaban el event loop 1,7 s; 200.000 eran más de un minuto.
+    const t0 = performance.now();
+    const out = stripIndexEntries('.'.repeat(200_000));
+    const ms = performance.now() - t0;
+
+    assert.ok(ms < 500, `tardó ${ms.toFixed(0)} ms`);
+    assert.equal(out, '.....');
+  });
+
+  it('sigue quitando un índice con relleno largo de puntos', () => {
+    const page = `Capítulo 1 ${'.'.repeat(300)} 19 Aquí empieza el libro.`;
+    assert.equal(stripIndexEntries(page), 'Aquí empieza el libro.');
+  });
 });
 
 describe('pdf-cleanup — cleanPdfPages', () => {

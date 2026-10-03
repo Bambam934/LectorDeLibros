@@ -130,10 +130,21 @@ function isValidUtf8(buffer: Buffer): boolean {
   return reEncoded.equals(buffer);
 }
 
+// Enlaces e imágenes en tiempo LINEAL. Los patrones anteriores
+// (`\[([^\]]+)\]\([^)]+\)`) eran cuadráticos con muchos `[` sin `]`: la clase
+// recorría hasta el final desde cada uno (medido: ×4 al duplicar). Excluir el
+// propio `[` corta cada intento en el siguiente. La URL admite un nivel de
+// paréntesis anidados, como en "https://es.wikipedia.org/wiki/C_(lenguaje)",
+// que antes dejaba un ")" suelto en el texto leído.
+const MD_IMAGE_RE = /!\[([^[\]]*)\]\((?:[^()]|\([^()]*\))*\)/g;
+const MD_LINK_RE = /\[([^[\]]+)\]\((?:[^()]|\([^()]*\))*\)/g;
+
 function stripMarkdownSyntax(text: string): string {
   return text
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '')
+    // Imágenes ANTES que enlaces: si no, el patrón de enlaces se comía
+    // "[alt](url)" de "![alt](url)" y en el texto quedaba "!alt".
+    .replace(MD_IMAGE_RE, '')
+    .replace(MD_LINK_RE, '$1')
     .replace(/^#{1,6}\s+/gm, '')
     .replace(/(\*{1,3}|_{1,3})(.+?)\1/g, '$2')
     .replace(/~~(.+?)~~/g, '$1')
