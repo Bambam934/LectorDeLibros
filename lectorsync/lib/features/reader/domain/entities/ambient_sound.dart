@@ -1,10 +1,12 @@
 import 'package:equatable/equatable.dart';
 import 'package:flutter/material.dart';
 
-/// Represents an ambient sound preset (rain, café, fireplace, etc.).
+/// Represents an ambient sound preset (rain, fireplace, white noise, etc.).
 ///
-/// The [source] is either a network URL or an `asset:` path. Users can
-/// also configure a custom URL via the ambient sound sheet.
+/// [source] admite tres formas:
+/// - `synth:<perfil>` — se genera en el dispositivo (ver `AmbientNoiseSynth`).
+/// - `asset:<ruta>` — grabación empaquetada en la app.
+/// - cualquier otra cosa se trata como URL de red.
 class AmbientSound extends Equatable {
   const AmbientSound({
     required this.id,
@@ -23,53 +25,72 @@ class AmbientSound extends Equatable {
   bool get isAsset => source.startsWith('asset:');
   String get assetPath => source.replaceFirst('asset:', '');
 
+  bool get isSynth => source.startsWith('synth:');
+  String get synthProfile => source.replaceFirst('synth:', '');
+
   @override
   List<Object?> get props => [id, label, source];
 }
 
-/// Curated presets. Sources point to public-domain / royalty-free
-/// streaming URLs. If a source becomes unavailable, the user can
-/// register a custom URL in the ambient sound sheet.
+/// Catálogo de sonidos ambientales.
+///
+/// Antes todos apuntaban al CDN de Pixabay, que bloquea el hotlinking: los
+/// cinco devolvían HTTP 403 (verificado 2026-08-11) y la app culpaba a la
+/// conexión del usuario. Ahora ninguno toca la red.
+///
+/// Los ruidos se generan en el dispositivo (`synth:`), que sale gratis en peso
+/// y en licencias. Cafetería y bosque no son ruido estacionario y no se pueden
+/// sintetizar de forma convincente, así que van como grabación empaquetada
+/// (`asset:`); su autoría está en `assets/audio/CREDITS.md`.
 class AmbientSoundPresets {
   static const List<AmbientSound> all = [
     AmbientSound(
       id: 'rain',
       label: 'Lluvia',
       icon: Icons.umbrella_rounded,
-      source:
-          'https://cdn.pixabay.com/download/audio/2022/03/15/audio_3776b6fbb6.mp3',
-      description: 'Lluvia suave constante',
+      source: 'synth:rain',
+      description: 'Lluvia constante que sube y baja',
     ),
     AmbientSound(
       id: 'cafe',
       label: 'Cafetería',
       icon: Icons.local_cafe_rounded,
-      source:
-          'https://cdn.pixabay.com/download/audio/2022/03/24/audio_36d96f8b66.mp3',
+      source: 'asset:assets/audio/cafe_ambience.mp3',
       description: 'Murmullo de cafetería',
-    ),
-    AmbientSound(
-      id: 'fire',
-      label: 'Chimenea',
-      icon: Icons.fireplace_rounded,
-      source:
-          'https://cdn.pixabay.com/download/audio/2022/04/12/audio_9c8d7e2b4f.mp3',
-      description: 'Crepitar del fuego',
     ),
     AmbientSound(
       id: 'forest',
       label: 'Bosque',
       icon: Icons.forest_rounded,
-      source:
-          'https://cdn.pixabay.com/download/audio/2021/10/19/audio_309ba5cb95.mp3',
-      description: 'Bosque y aves',
+      source: 'asset:assets/audio/forest_birds.mp3',
+      description: 'Pájaros en el bosque',
+    ),
+    AmbientSound(
+      id: 'fire',
+      label: 'Chimenea',
+      icon: Icons.fireplace_rounded,
+      source: 'synth:fire',
+      description: 'Crepitar del fuego',
+    ),
+    AmbientSound(
+      id: 'waves',
+      label: 'Oleaje',
+      icon: Icons.waves_rounded,
+      source: 'synth:brown',
+      description: 'Ruido marrón, grave y envolvente',
+    ),
+    AmbientSound(
+      id: 'pink_noise',
+      label: 'Ruido rosa',
+      icon: Icons.blur_on_rounded,
+      source: 'synth:pink',
+      description: 'Más suave que el blanco, menos fatigante',
     ),
     AmbientSound(
       id: 'white_noise',
       label: 'Ruido blanco',
       icon: Icons.tonality_rounded,
-      source:
-          'https://cdn.pixabay.com/download/audio/2022/06/07/audio_e93a78b66c.mp3',
+      source: 'synth:white',
       description: 'Ruido blanco neutro',
     ),
   ];

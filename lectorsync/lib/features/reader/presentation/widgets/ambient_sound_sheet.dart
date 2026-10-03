@@ -6,9 +6,9 @@ import '../../domain/entities/ambient_sound.dart';
 
 /// Bottom sheet for choosing and controlling ambient background sound.
 ///
-/// Listed presets stream from public-domain audio CDNs. The sheet
-/// also exposes volume and a stop control. Audio plays alongside the
-/// TTS engine — they don't interfere.
+/// Los presets se sintetizan en el dispositivo (ver `AmbientNoiseSynth`), así
+/// que funcionan sin conexión. The sheet also exposes volume and a stop
+/// control. Audio plays alongside the TTS engine — they don't interfere.
 class AmbientSoundSheet extends StatefulWidget {
   const AmbientSoundSheet({super.key});
 
@@ -21,6 +21,9 @@ class _AmbientSoundSheetState extends State<AmbientSoundSheet> {
   bool _playing = false;
   String? _currentId;
   double _volume = 0.4;
+
+  /// Preset que se está preparando ahora mismo, si hay alguno.
+  String? _loadingId;
 
   @override
   void initState() {
@@ -36,18 +39,25 @@ class _AmbientSoundSheetState extends State<AmbientSoundSheet> {
 
   Future<void> _select(AmbientSound sound) async {
     final messenger = ScaffoldMessenger.of(context);
+    // Los presets sintetizados generan 20 s de audio en un isolate antes de
+    // sonar. Sin este aviso el usuario toca el preset y no pasa nada durante
+    // casi un segundo, así que vuelve a tocarlo.
+    setState(() => _loadingId = sound.id);
     try {
       await _repo.play(sound);
       if (mounted) {
         setState(() {
           _currentId = sound.id;
           _playing = true;
+          _loadingId = null;
         });
       }
     } catch (e) {
+      if (mounted) setState(() => _loadingId = null);
+      // Antes este mensaje decía "verifica tu conexión a internet", que era
+      // falso: los presets se generan en el dispositivo y no tocan la red.
       messenger.showSnackBar(SnackBar(
-        content: Text('No se pudo cargar "${sound.label}": '
-            'verifica tu conexión a internet'),
+        content: Text('No se pudo reproducir "${sound.label}"'),
         duration: const Duration(seconds: 3),
       ));
     }
@@ -184,18 +194,29 @@ class _AmbientSoundSheetState extends State<AmbientSoundSheet> {
                   itemBuilder: (context, index) {
                     final sound = AmbientSoundPresets.all[index];
                     final selected = sound.id == _currentId;
+                    final loading = sound.id == _loadingId;
                     return ListTile(
+                      enabled: _loadingId == null,
                       leading: CircleAvatar(
                         radius: 20,
                         backgroundColor: selected
                             ? scheme.primaryContainer
                             : scheme.surfaceContainerHighest,
-                        child: Icon(
-                          sound.icon,
-                          color: selected
-                              ? scheme.onPrimaryContainer
-                              : scheme.onSurfaceVariant,
-                        ),
+                        child: loading
+                            ? SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: scheme.onSurfaceVariant,
+                                ),
+                              )
+                            : Icon(
+                                sound.icon,
+                                color: selected
+                                    ? scheme.onPrimaryContainer
+                                    : scheme.onSurfaceVariant,
+                              ),
                       ),
                       title: Text(
                         sound.label,
@@ -205,15 +226,16 @@ class _AmbientSoundSheetState extends State<AmbientSoundSheet> {
                           color: selected ? scheme.primary : null,
                         ),
                       ),
-                      subtitle: sound.description != null
-                          ? Text(
-                              sound.description!,
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: scheme.onSurfaceVariant,
-                              ),
-                            )
-                          : null,
+                      subtitle: Text(
+                        loading
+                            ? 'Preparando el sonido…'
+                            : (sound.description ?? ''),
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontStyle: loading ? FontStyle.italic : null,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
                       trailing: selected && _playing
                           ? Icon(Icons.equalizer_rounded,
                               color: scheme.primary, size: 20)
