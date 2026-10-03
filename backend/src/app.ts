@@ -11,6 +11,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { registerV1Routes } from './api/v1/routes.js';
 import { cleanupExpiredTokens } from './core/token-revocation.js';
 import { env } from './core/env.js';
+import { redactAccessToken } from './core/log-redaction.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AUDIO_DIR = path.join(__dirname, 'storage', 'audio');
@@ -38,7 +39,26 @@ function durationToMs(value: string): number {
 }
 
 export async function buildApp(): Promise<FastifyInstance> {
-  const app = Fastify({ logger: env.NODE_ENV !== 'test' });
+  const app = Fastify({
+    logger:
+      env.NODE_ENV === 'test'
+        ? false
+        : {
+            serializers: {
+              // Los mismos campos que el serializador por defecto, pero con
+              // el JWT del SSE web fuera de la URL: ver log-redaction.ts.
+              req(request) {
+                return {
+                  method: request.method,
+                  url: redactAccessToken(request.url),
+                  host: request.host,
+                  remoteAddress: request.ip,
+                  remotePort: request.socket?.remotePort,
+                };
+              },
+            },
+          },
+  });
 
   if (env.HELMET_ENABLED) {
     await app.register(helmet, {
