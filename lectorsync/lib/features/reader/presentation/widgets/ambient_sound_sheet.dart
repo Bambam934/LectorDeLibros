@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../../../core/di/injection_container.dart';
@@ -25,6 +27,8 @@ class _AmbientSoundSheetState extends State<AmbientSoundSheet> {
   /// Preset que se está preparando ahora mismo, si hay alguno.
   String? _loadingId;
 
+  StreamSubscription<bool>? _playingSub;
+
   @override
   void initState() {
     super.initState();
@@ -32,9 +36,18 @@ class _AmbientSoundSheetState extends State<AmbientSoundSheet> {
     _playing = _repo.isPlaying;
     _currentId = _repo.current?.id;
     _volume = _repo.volume;
-    _repo.playingStream.listen((v) {
+    _playingSub = _repo.playingStream.listen((v) {
       if (mounted) setState(() => _playing = v);
     });
+  }
+
+  @override
+  void dispose() {
+    // El repositorio es un singleton de toda la sesión: sin cancelar, cada
+    // apertura de la hoja dejaba un oyente más vivo para siempre, reteniendo
+    // este State y su contexto.
+    _playingSub?.cancel();
+    super.dispose();
   }
 
   Future<void> _select(AmbientSound sound) async {
