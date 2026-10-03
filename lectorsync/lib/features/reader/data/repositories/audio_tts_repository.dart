@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:fpdart/fpdart.dart';
 import '../../../../core/errors/failures.dart';
+import '../../../../core/utils/sorted_lookup.dart';
 import '../../domain/entities/chapter_audio.dart';
 import '../../domain/repositories/audio_player_repository.dart';
 import '../../domain/repositories/reader_repository.dart';
@@ -189,23 +190,13 @@ class AudioTtsRepository implements TtsRepository {
   }
 
   int _findWordAtPosition(int positionMs) {
-    if (_wordTimestamps.isEmpty) return 0;
-
-    int lo = 0;
-    int hi = _wordTimestamps.length - 1;
-    int result = 0;
-
-    while (lo <= hi) {
-      final mid = (lo + hi) ~/ 2;
-      if (_wordTimestamps[mid].timestampMs <= positionMs) {
-        result = _wordTimestamps[mid].wordIndex;
-        lo = mid + 1;
-      } else {
-        hi = mid - 1;
-      }
-    }
-
-    return result;
+    final idx = lastIndexAtOrBefore<WordTimestamp>(
+      _wordTimestamps,
+      positionMs,
+      keyOf: (ts) => ts.timestampMs,
+    );
+    // Antes de la primera marca, o sin marcas, el principio del capítulo.
+    return idx < 0 ? 0 : _wordTimestamps[idx].wordIndex;
   }
 
   int _findTimestampForWord(int wordIndex) {
