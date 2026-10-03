@@ -26,6 +26,7 @@ import '../../data/parsing/pdf_page_locator.dart';
 import '../../data/repositories/audio_tts_repository.dart';
 import '../../data/repositories/device_tts_repository.dart';
 import '../../data/repositories/tts/tts_capabilities.dart';
+import '../../data/repositories/tts/voice_parser.dart';
 import '../../data/repositories/tts_repository_proxy.dart';
 import '../../domain/repositories/tts_repository.dart';
 import '../../data/repositories/bookmark_repository.dart';
@@ -2720,10 +2721,12 @@ class _VoiceMenuSheetState extends State<_VoiceMenuSheet> {
     final locale = v['locale'] ?? '';
     final gender = v['gender'];
     final neural = _isNeuralVoice(v) ? 'Neural' : '';
+    final network = voiceNeedsNetwork(v) ? 'Necesita internet' : '';
     final parts = [
       locale,
       gender,
       neural,
+      network,
     ].where((p) => p != null && p.isNotEmpty);
     return parts.join(' · ');
   }
@@ -2805,7 +2808,9 @@ class _VoiceMenuSheetState extends State<_VoiceMenuSheet> {
                     ListTile(
                       dense: true,
                       leading: Icon(
-                        _isNeuralVoice(v)
+                        voiceNeedsNetwork(v)
+                            ? Icons.cloud_outlined
+                            : _isNeuralVoice(v)
                             ? Icons.auto_awesome_rounded
                             : _isDesktopPlatform
                             ? Icons.desktop_windows_rounded

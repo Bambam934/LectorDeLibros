@@ -21,3 +21,10 @@ List<Map<String, String>> parseVoices(
   }
   return voices;
 }
+
+/// Si la voz necesita conexión para sintetizar. En Android, flutter_tts lo
+/// expone como `network_required` ("1"/"0"): las voces `-network` de Google
+/// no suenan sin internet, y elegirlas en modo offline dejaba el lector mudo
+/// sin ningún aviso. Las demás plataformas no traen el dato.
+bool voiceNeedsNetwork(Map<String, String> voice) =>
+    voice['network_required'] == '1';
