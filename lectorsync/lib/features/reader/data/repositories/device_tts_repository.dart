@@ -5,6 +5,7 @@ import 'package:fpdart/fpdart.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../../core/errors/failures.dart';
+import '../../../../core/utils/sorted_lookup.dart';
 import '../../domain/repositories/tts_repository.dart';
 import 'tts/desktop_tts_adapter.dart';
 import 'tts/language_detector.dart';
@@ -593,11 +594,27 @@ class DeviceTtsRepository implements TtsRepository {
       //
       // enforceMaxSegmentLength still runs everywhere so Web's 180-char
       // utterance cap and SAPI5's 800-char practical limit are honoured.
-      final initialSegments = _adapter.capabilities.supportsWordBoundary
-          ? splitIntoSegments(speakText, speakWords, clampedStart)
-          : splitIntoSentences(speakText, speakWords, clampedStart);
+      final segmentProse = _adapter.capabilities.supportsWordBoundary
+          ? splitIntoSegments
+          : splitIntoSentences;
+      // Aislar los párrafos-fórmula ANTES de segmentar la prosa. La
+      // heurística mide proporciones del bloque entero y está calibrada para
+      // un párrafo: corriéndola sobre trozos de 200 palabras (o sobre
+      // oraciones ya fusionadas con su vecina) no se disparaba nunca, y la
+      // voz leía la ecuación aplanada aunque la pantalla la pintara como
+      // fórmula. Ver `splitIsolatingFormulas`.
+      final initialSegments = seg.splitIsolatingFormulas(
+        speakText,
+        speakWords,
+        clampedStart,
+        segmentProse: segmentProse,
+      );
+      // Silenciar las fórmulas ANTES de trocear por longitud: el texto ya
+      // sustituido es corto y no hay nada que partir. Al revés, una fórmula
+      // larga se habría repartido en varios trozos y cada uno diría
+      // "Fórmula." por separado.
       _pendingSegments = enforceMaxSegmentLength(
-        initialSegments,
+        seg.muteFormulaSegments(initialSegments),
         _adapter.capabilities.maxUtteranceChars,
       );
       _currentSegmentIndex = 0;
@@ -669,9 +686,19 @@ class DeviceTtsRepository implements TtsRepository {
           _segmentRetryCount = 0;
           continue;
         }
-        effectiveWords = segment.words.sublist(localStart);
-        textToSpeak = effectiveWords.join(' ');
-        effectiveStartWord = segment.globalStartWordIndex + localStart;
+        if (segment.isFormula) {
+          // El texto de una fórmula silenciada es un aviso, no se deriva de
+          // `words`: reconstruirlo desde ahí devolvería la ecuación aplanada
+          // que el aviso vino a sustituir. Se repite el aviso entero, que
+          // dura menos de un segundo.
+          effectiveWords = segment.words;
+          textToSpeak = segment.text;
+          effectiveStartWord = segment.globalStartWordIndex;
+        } else {
+          effectiveWords = segment.words.sublist(localStart);
+          textToSpeak = effectiveWords.join(' ');
+          effectiveStartWord = segment.globalStartWordIndex + localStart;
+        }
         debugPrint('[DeviceTTS] recovery slice: seg=$_currentSegmentIndex '
             'localStart=$localStart effChars=${textToSpeak.length} '
             'effWords=${effectiveWords.length}');
@@ -718,6 +745,7 @@ class DeviceTtsRepository implements TtsRepository {
               globalStartWordIndex: effectiveStartWord,
               audibleCharCount: computeAudibleCharCount(textToSpeak),
               hasNumbers: detectNumbers(textToSpeak),
+              isFormula: segment.isFormula,
             )
           : segment;
       _currentEffectiveSegment = trackerSegment;
@@ -1264,6 +1292,19 @@ class DeviceTtsRepository implements TtsRepository {
         notFoundCount++;
       }
     }
+    // Ninguna palabra aparece en el texto: el segmento se pronuncia con un
+    // texto distinto del que representa — el caso de una fórmula sustituida
+    // por "Fórmula.". Con todos los offsets a 0, `_binarySearch` devuelve el
+    // ÚLTIMO índice para charPos=0 y el resaltado saltaba de golpe al final
+    // del bloque en cuanto arrancaba el aviso. Repartir las palabras a lo
+    // largo del texto hace que el seguidor las recorra durante el aviso, que
+    // es justo lo que promete `muteFormulaSegments`.
+    if (notFoundCount == words.length && words.length > 1 && text.isNotEmpty) {
+      return [
+        for (var i = 0; i < words.length; i++) (i * text.length) ~/ words.length,
+      ];
+    }
+
     // FIX — diagnostic: if many words are not found in the text, the
     // segment text and words are misaligned. This would cause
     // _binarySearch to map progress events to erratic word indices.
@@ -1275,17 +1316,13 @@ class DeviceTtsRepository implements TtsRepository {
     return offsets;
   }
 
+  /// Palabra que corresponde a [charPos] dentro del segmento en curso.
+  ///
+  /// Cae en 0 cuando no hay offsets o la posición es anterior al primero: el
+  /// seguidor prefiere quedarse al principio del segmento antes que recibir
+  /// un índice negativo.
   int _binarySearch(List<int> offsets, int charPos) {
-    int lo = 0, hi = offsets.length - 1, result = 0;
-    while (lo <= hi) {
-      final mid = (lo + hi) ~/ 2;
-      if (offsets[mid] <= charPos) {
-        result = mid;
-        lo = mid + 1;
-      } else {
-        hi = mid - 1;
-      }
-    }
-    return result;
+    final idx = lastOffsetAtOrBefore(offsets, charPos);
+    return idx < 0 ? 0 : idx;
   }
 }

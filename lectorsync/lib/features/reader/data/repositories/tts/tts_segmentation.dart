@@ -1,3 +1,4 @@
+import '../../parsing/formula_detector.dart';
 import 'speak_segment.dart';
 
 /// Lógica **pura** de segmentación de texto para el pipeline TTS.
@@ -316,6 +317,179 @@ List<SpeakSegment> splitIntoSentences(
   }
   if (buffer != null) merged.add(buffer);
   return merged;
+}
+
+/// Separador de párrafo. El mismo que usa `Chapter.paragraphs`, a propósito:
+/// la partición que oye el TTS tiene que ser la misma que ve la pantalla.
+final RegExp _paragraphBreak = RegExp(r'\n\s*\n');
+
+final RegExp _whitespace = RegExp(r'\s+');
+
+int _countWords(String text) =>
+    text.split(_whitespace).where((w) => w.isNotEmpty).length;
+
+/// Límites de cada párrafo dentro de [text].
+///
+/// Devuelve índices en lugar de trozos para poder cortar del String original
+/// más tarde: reconstruirlo uniendo bloques cambiaría los separadores, y el
+/// texto que se manda al motor debe ser exactamente el del capítulo.
+(List<int>, List<int>) _paragraphSpans(String text) {
+  final starts = <int>[0];
+  final ends = <int>[];
+  for (final m in _paragraphBreak.allMatches(text)) {
+    ends.add(m.start);
+    starts.add(m.end);
+  }
+  ends.add(text.length);
+  return (starts, ends);
+}
+
+/// Segmenta [text] dejando cada párrafo-fórmula en un segmento propio y
+/// pasando los tramos de prosa a [segmentProse].
+///
+/// Hace falta porque [looksLikeFormula] mide proporciones (letras sobre
+/// caracteres, palabras reales sobre tokens) del bloque **entero**, y está
+/// calibrado para un párrafo. Aplicado a la salida de [splitIntoSegments]
+/// —trozos de hasta [kMaxWordsPerSegment] palabras— o de [splitIntoSentences]
+/// —que además fusiona los fragmentos de menos de 30 caracteres con su
+/// vecino— la prosa que arrastra el trozo diluye ambas proporciones muy por
+/// encima del umbral y no se dispara nunca. El resultado era que la pantalla
+/// pintaba el recuadro de fórmula y la voz leía la ecuación aplanada igual
+/// que antes.
+///
+/// Los tramos de prosa se segmentan **de una pieza**, no párrafo a párrafo:
+/// en Android/iOS cada utterance extra cuesta 50-100 ms de arranque del
+/// motor, y trocear por párrafos degradaría un flujo que hoy es continuo.
+///
+/// Si el capítulo no tiene ninguna fórmula —el caso común— se delega directo
+/// en [segmentProse] y el resultado es idéntico al de antes del cambio.
+List<SpeakSegment> splitIsolatingFormulas(
+  String text,
+  List<String> words,
+  int globalStartIndex, {
+  required List<SpeakSegment> Function(String, List<String>, int) segmentProse,
+}) {
+  if (words.isEmpty) return const [];
+  if (text.trim().isEmpty) {
+    return segmentProse(text, words, globalStartIndex);
+  }
+
+  final (starts, ends) = _paragraphSpans(text);
+  final blocks = [
+    for (var i = 0; i < starts.length; i++) text.substring(starts[i], ends[i]),
+  ];
+
+  final wordStarts = <int>[];
+  final wordEnds = <int>[];
+  var cursor = 0;
+  for (final block in blocks) {
+    wordStarts.add(cursor);
+    cursor += _countWords(block);
+    wordEnds.add(cursor);
+  }
+
+  // El reparto por párrafos tiene que sumar exactamente `words`: el
+  // separador es una racha de espacio en blanco y `words` se tokeniza con
+  // `\s+` sobre este mismo texto, así que en condiciones normales cuadra.
+  // Si no cuadra, la partición no es de fiar y segmentar con ella
+  // desalinearía el seguidor de palabras — mejor no tocar nada.
+  if (cursor != words.length) {
+    return segmentProse(text, words, globalStartIndex);
+  }
+
+  final isFormula = [for (final block in blocks) looksLikeFormula(block)];
+  if (!isFormula.contains(true)) {
+    return segmentProse(text, words, globalStartIndex);
+  }
+
+  final result = <SpeakSegment>[];
+  var i = 0;
+  while (i < blocks.length) {
+    if (isFormula[i]) {
+      final blockText = blocks[i].trim();
+      result.add(
+        SpeakSegment(
+          text: blockText,
+          words: words.sublist(wordStarts[i], wordEnds[i]),
+          globalStartWordIndex: globalStartIndex + wordStarts[i],
+          audibleCharCount: computeAudibleCharCount(blockText),
+          hasNumbers: detectNumbers(blockText),
+        ),
+      );
+      i++;
+      continue;
+    }
+
+    // Tramo de prosa: todos los párrafos seguidos hasta la próxima fórmula.
+    final runStart = i;
+    while (i < blocks.length && !isFormula[i]) {
+      i++;
+    }
+    final runWordStart = wordStarts[runStart];
+    final runWordEnd = wordEnds[i - 1];
+    if (runWordEnd <= runWordStart) continue;
+
+    result.addAll(
+      segmentProse(
+        text.substring(starts[runStart], ends[i - 1]),
+        words.sublist(runWordStart, runWordEnd),
+        globalStartIndex + runWordStart,
+      ),
+    );
+  }
+
+  return result;
+}
+
+/// Lo que la voz dice al llegar a una fórmula.
+///
+/// No se deja vacío a propósito: un utterance sin texto no dispara los
+/// callbacks de fin en Web Speech y colgaría la cola de segmentos. Además,
+/// anunciar la fórmula le dice al oyente que ahí hay algo que mirar en
+/// pantalla, en vez de dejar un silencio inexplicable.
+const String kFormulaSpokenReplacement = 'Fórmula.';
+
+/// Sustituye el texto de los segmentos que son una fórmula aplanada.
+///
+/// Un PDF de matemáticas pierde la maquetación de sus ecuaciones al
+/// extraerse, y el motor acaba leyendo `10.50.5(1)2+1=` como "diez punto
+/// cincuenta punto cinco paréntesis uno...". Es ruido puro: ni se entiende
+/// ni aporta.
+///
+/// **La alineación del seguidor no se toca.** Cada segmento conserva su
+/// `words` y su `globalStartWordIndex`, así que al terminar de decir
+/// "Fórmula." el índice global cae exactamente donde caería si hubiera leído
+/// la ecuación entera. Solo cambia el ritmo dentro del bloque: el resaltado
+/// lo recorre en el segundo que dura el aviso.
+///
+/// `audibleCharCount` se recalcula sobre el texto nuevo para que el tracker
+/// estime bien esa duración corta.
+List<SpeakSegment> muteFormulaSegments(
+  List<SpeakSegment> segments, {
+  String replacement = kFormulaSpokenReplacement,
+}) {
+  var changed = false;
+  final result = <SpeakSegment>[];
+
+  for (final seg in segments) {
+    if (!looksLikeFormula(seg.text)) {
+      result.add(seg);
+      continue;
+    }
+    changed = true;
+    result.add(
+      SpeakSegment(
+        text: replacement,
+        words: seg.words,
+        globalStartWordIndex: seg.globalStartWordIndex,
+        audibleCharCount: computeAudibleCharCount(replacement),
+        hasNumbers: false,
+        isFormula: true,
+      ),
+    );
+  }
+
+  return changed ? result : segments;
 }
 
 /// True iff the given engine error message indicates an

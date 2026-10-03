@@ -7,6 +7,7 @@ import 'package:get_it/get_it.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/network/api_client.dart';
+import '../../core/storage/local_book_store.dart';
 import '../../core/storage/secure_storage.dart';
 import '../../core/sync/client_id_service.dart';
 import '../../core/sync/sync_stream_client.dart';
@@ -206,6 +207,13 @@ Future<void> configureDependencies() async {
   // depende de la abstracción, no de la clase concreta, y no hace falta cast.
   if (_kOfflineMode && !sl.isRegistered<LocalLibraryRepository>()) {
     sl.registerLazySingleton<LocalLibraryRepository>(LocalLibraryRepository.new);
+  }
+  // El segundo contrato prometido arriba, ahora sí registrado: la UI del
+  // lector necesita resolver la ruta del archivo original (para enseñar la
+  // página de una fórmula) y debe pedirla por la abstracción, no importando
+  // la capa `data` de `library`.
+  if (_kOfflineMode && !sl.isRegistered<LocalBookStore>()) {
+    sl.registerLazySingleton<LocalBookStore>(() => sl<LocalLibraryRepository>());
   }
   if (!sl.isRegistered<LibraryRepository>()) {
     sl.registerLazySingleton<LibraryRepository>(

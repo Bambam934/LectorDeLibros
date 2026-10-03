@@ -11,6 +11,7 @@ class SpeakSegment {
     required this.globalStartWordIndex,
     required this.audibleCharCount,
     required this.hasNumbers,
+    this.isFormula = false,
   });
 
   final String text;
@@ -18,4 +19,11 @@ class SpeakSegment {
   final int globalStartWordIndex;
   final int audibleCharCount;
   final bool hasNumbers;
+
+  /// [text] es un aviso sintético ("Fórmula.") y NO se deriva de [words].
+  ///
+  /// Quien necesite rehacer el texto del segmento —la recuperación tras un
+  /// utterance interrumpido— debe respetar esta marca: reconstruirlo desde
+  /// [words] devolvería la ecuación aplanada que el aviso vino a sustituir.
+  final bool isFormula;
 }

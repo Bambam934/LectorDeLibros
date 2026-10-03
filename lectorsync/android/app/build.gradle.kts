@@ -18,10 +18,18 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace = "com.lectorsync.lectorsync"
-    // Pin to Android 14 SDK. Pinning lower than Flutter's default avoids
-    // installers (Motorola Secure, etc.) rejecting APKs whose target is
-    // newer than the device's installed Android.
-    compileSdk = 34
+    // compileSdk y targetSdk van por separado a propósito.
+    //
+    // compileSdk solo dice contra qué APIs se compila; subirlo no cambia
+    // ningún comportamiento en tiempo de ejecución. Está en 36 porque pdfrx
+    // arrastra androidx.core:core:1.17.0, que se niega a compilar contra
+    // menos de 36.
+    //
+    // targetSdk sí cambia el comportamiento y es lo que miran los
+    // instaladores: sigue clavado en 34 (ver defaultConfig) porque
+    // instaladores como Motorola Secure rechazan APKs cuyo target es más
+    // nuevo que el Android del dispositivo.
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
