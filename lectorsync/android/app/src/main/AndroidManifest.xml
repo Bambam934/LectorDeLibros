@@ -1,6 +1,18 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET"/>
+
+    <!-- Lectura en segundo plano (ADR 12): servicio de reproducción en primer
+         plano de audio_service. Con target 34 el tipo mediaPlayback exige su
+         propio permiso. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
+
+    <!-- Modo concentración (ADR 12): regla propia de "No molestar". El usuario
+         lo concede en Ajustes > Acceso a No molestar. -->
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY"/>
 
     <application
         android:label="lectorsync"
@@ -24,7 +36,28 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- Actividad de configuración de la regla de "No molestar": el
+                 sistema la abre desde Ajustes al tocar la regla. -->
+            <intent-filter>
+                <action android:name="android.app.action.AUTOMATIC_ZEN_RULE"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+            </intent-filter>
         </activity>
+
+        <service android:name="com.ryanheise.audioservice.AudioService"
+            android:foregroundServiceType="mediaPlayback"
+            android:exported="true" tools:ignore="Instantiatable">
+            <intent-filter>
+                <action android:name="android.media.browse.MediaBrowserService"/>
+            </intent-filter>
+        </service>
+
+        <receiver android:name="com.ryanheise.audioservice.MediaButtonReceiver"
+            android:exported="true" tools:ignore="Instantiatable">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON"/>
+            </intent-filter>
+        </receiver>
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />

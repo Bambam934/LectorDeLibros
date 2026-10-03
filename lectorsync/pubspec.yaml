@@ -51,6 +51,11 @@ dependencies:
   path_provider: ^2.1.5
   syncfusion_flutter_pdf: ^28.1.33
   pdfrx: ^2.4.7
+  audio_service: ^0.18.19
+  window_manager: ^0.5.2
+  url_launcher: ^6.3.3
+  web: ^1.1.1
+  audio_session: ^0.2.4
 
 dev_dependencies:
   flutter_test:

@@ -5,8 +5,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../../../core/di/injection_container.dart';
+import '../../../../core/focus/focus_prefs.dart';
+import '../../../../core/focus/quiet_mode.dart';
+import '../../../../core/focus/system_fullscreen.dart';
 import '../../../../core/layout/breakpoints.dart';
 import '../../../../core/storage/local_book_store.dart';
 import '../../../../core/sync/client_id_service.dart';
@@ -30,6 +34,8 @@ import '../../data/repositories/reading_stats_repository.dart';
 import '../../domain/entities/bookmark.dart';
 import '../../domain/repositories/reader_repository.dart';
 import '../bloc/reader_bloc.dart';
+import '../background/reading_audio_handler.dart';
+import '../reading_focus_controller.dart';
 import '../reading_typography.dart';
 import '../widgets/formula_source_sheet.dart';
 import '../bloc/reader_event.dart';
@@ -139,11 +145,141 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
   int _sessionStartWordIndex = 0;
   StreamSubscription<TtsPlaybackStatus>? _ttsStatusSub;
 
+  /// Modo concentración: pantalla completa y "No molestar" (ADR 12).
+  late final ReadingFocusController _focus = ReadingFocusController(
+    fullscreen: sl<SystemFullscreen>(),
+    quietMode: sl<QuietMode>(),
+    prefs: sl<FocusPrefs>(),
+    askForQuietAccess: _askForQuietAccess,
+    showDesktopQuietHint: _isWindows ? _showWindowsQuietHint : null,
+  );
+
+  /// Puente con los controles del sistema para seguir leyendo con la
+  /// pantalla apagada (ADR 12). Es `null` donde no hay servicio de
+  /// reproducción (todo lo que no es Android, o si no pudo arrancar): ahí la
+  /// voz se sigue parando en segundo plano, como antes.
+  ReadingAudioHandler? _audioHandler;
+
+  static bool get _isWindows =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
+
   late final PreferencesCubit _preferencesCubit = PreferencesCubit(
     repository: sl(),
   );
 
   void _toggleImmersive() => setState(() => _immersive = !_immersive);
+
+  /// Entra o sale del modo concentración. El toque sobre el texto sigue
+  /// alternando solo los controles del lector ([_toggleImmersive]); colgar de
+  /// ahí el "No molestar" lo encendería y apagaría con cada toque.
+  Future<void> _toggleFullscreen() async {
+    if (_focus.isFullscreen) {
+      await _focus.exit();
+      if (!_disposed && mounted) setState(() => _immersive = false);
+    } else {
+      setState(() => _immersive = true);
+      await _focus.enter();
+      if (!_disposed && mounted) setState(() {});
+    }
+  }
+
+  /// Pide el "Acceso a No molestar" la primera vez (ADR 12, sección 2).
+  Future<QuietAccessChoice> _askForQuietAccess() async {
+    if (_disposed || !mounted) return QuietAccessChoice.notNow;
+    var dontAskAgain = false;
+    final choice = await showDialog<QuietAccessChoice>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          icon: const Icon(Icons.do_not_disturb_on_rounded),
+          title: const Text('Silenciar notificaciones mientras lees'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Para silenciar las notificaciones de otras apps en pantalla '
+                'completa, LectorSync necesita el permiso "Acceso a No '
+                'molestar". Se abrirá Ajustes: activa LectorSync y vuelve.\n\n'
+                'Tus excepciones (favoritos, alarmas) se respetan y la voz '
+                'sigue sonando.',
+              ),
+              CheckboxListTile(
+                value: dontAskAgain,
+                onChanged: (v) =>
+                    setDialogState(() => dontAskAgain = v ?? false),
+                title: const Text('No volver a preguntar'),
+                controlAffinity: ListTileControlAffinity.leading,
+                contentPadding: EdgeInsets.zero,
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(
+                dontAskAgain
+                    ? QuietAccessChoice.never
+                    : QuietAccessChoice.notNow,
+              ),
+              child: const Text('Seguir sin silenciar'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext)
+                  .pop(QuietAccessChoice.openSettings),
+              child: const Text('Abrir ajustes'),
+            ),
+          ],
+        ),
+      ),
+    );
+    return choice ?? QuietAccessChoice.notNow;
+  }
+
+  /// En Windows no hay API para silenciar, pero el sistema tiene su propia
+  /// regla para la pantalla completa. Se avisa una sola vez (ADR 12).
+  Future<void> _showWindowsQuietHint() async {
+    if (_disposed || !mounted) return;
+    final open = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        icon: const Icon(Icons.do_not_disturb_on_rounded),
+        title: const Text('Silenciar Windows en pantalla completa'),
+        content: const Text(
+          'Windows puede activar No molestar por sí solo mientras una app '
+          'está en pantalla completa. Se activa en Ajustes > Sistema > '
+          'Notificaciones > "Activar No molestar automáticamente" > "Al usar '
+          'una app en modo de pantalla completa".',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Ahora no'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Abrir ajustes'),
+          ),
+        ],
+      ),
+    );
+    if (open != true) return;
+    try {
+      await launchUrl(Uri.parse('ms-settings:notifications'));
+    } catch (_) {
+      // Sin manejador para ms-settings: el texto ya explica dónde está.
+    }
+  }
+
+  /// Conecta el libro abierto con la notificación de lectura (ADR 12).
+  void _attachBackgroundReading() {
+    if (!sl.isRegistered<ReadingAudioHandler>()) return;
+    _audioHandler = sl<ReadingAudioHandler>()
+      ..attach(
+        bookId: widget.bookId,
+        bookTitle: widget.bookTitle,
+        commands: _BlocReadingCommands(context.read<ReaderBloc>()),
+      );
+  }
   void _toggleToc() => setState(() => _tocVisible = !_tocVisible);
   void _toggleSpeedBar() =>
       setState(() => _speedBarVisible = !_speedBarVisible);
@@ -356,6 +492,14 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
     // y las sesiones de lectura no se registraban en las estadísticas. El
     // proxy reenvía el estado del motor que esté activo.
     _ttsStatusSub = sl<TtsRepository>().statusStream.listen((status) {
+      // La misma señal decide el modo concentración y la notificación: si la
+      // voz suena, el silencio sigue aunque la pantalla esté apagada.
+      final voiceOn = status == TtsPlaybackStatus.playing ||
+          status == TtsPlaybackStatus.loading;
+      unawaited(_focus.setVoicePlaying(voiceOn));
+      final handler = _audioHandler;
+      if (handler != null) unawaited(handler.reportPlaying(voiceOn));
+
       if (status == TtsPlaybackStatus.playing) {
         if (!_sessionStopwatch.isRunning) {
           _sessionStopwatch.start();
@@ -491,6 +635,7 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
       _streamsSubscribed = true;
       _listenEstimating();
       _listenTtsStatus();
+      _attachBackgroundReading();
     }
   }
 
@@ -524,9 +669,19 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
     //     mobile, tab-hide on web).
     //   - Auto-pausing TTS is destructive (kills the playing voice), so
     //     we only do it on the strict `paused` state.
+    // El modo concentración necesita saber si la app se ve en cualquier
+    // transición, también al volver de Ajustes con el permiso concedido.
+    final visible = state == AppLifecycleState.resumed ||
+        state == AppLifecycleState.inactive;
+    unawaited(_focus.setAppVisible(visible));
+
     final shouldSave =
         state == AppLifecycleState.paused || state == AppLifecycleState.hidden;
-    final shouldStopTts = state == AppLifecycleState.paused;
+    // Con el servicio de reproducción enganchado, la voz sigue leyendo en
+    // segundo plano (ADR 12): con la pantalla apagada o en otra app. Sin él,
+    // se para como siempre, porque Android cortaría la lectura a medias.
+    final shouldStopTts = state == AppLifecycleState.paused &&
+        !(_audioHandler?.isAttached ?? false);
 
     if (!shouldSave) return;
     if (!mounted) return;
@@ -563,6 +718,11 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
     }
     _ttsStatusSub?.cancel();
     _estimatingSub?.cancel();
+    // Cerrar el libro quita la pantalla completa, el "No molestar" y la
+    // notificación de lectura.
+    _focus.dispose();
+    final handler = _audioHandler;
+    if (handler != null) unawaited(handler.detach());
     _preferencesCubit.close();
     _scrollController?.dispose();
     _followVoice.dispose();
@@ -580,7 +740,15 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
             prefs.palette,
             Theme.of(context).colorScheme,
           );
-          return _buildScaffold(context, prefs, colors);
+          return PopScope(
+            canPop: !_focus.isFullscreen,
+            onPopInvokedWithResult: (didPop, _) {
+              // Atrás saca primero de la pantalla completa en vez de cerrar
+              // el libro (ADR 12).
+              if (!didPop) unawaited(_toggleFullscreen());
+            },
+            child: _buildScaffold(context, prefs, colors),
+          );
         },
       ),
     );
@@ -600,6 +768,8 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
         LogicalKeySet(LogicalKeyboardKey.arrowRight):
             const _NextChapterIntent(),
         LogicalKeySet(LogicalKeyboardKey.keyT): const _ToggleTocIntent(),
+        LogicalKeySet(LogicalKeyboardKey.f11): const _ToggleFullscreenIntent(),
+        LogicalKeySet(LogicalKeyboardKey.escape): const _ExitFullscreenIntent(),
         // Desktop-friendly shortcuts. Ctrl on Win/Linux, Cmd on macOS;
         // Flutter's LogicalKeyboardKey.control matches either modifier
         // when used as `meta` is not required — but for cross-platform
@@ -637,6 +807,12 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
             () => _navigateChapter(context, 1),
           ),
           _ToggleTocIntent: _CallbackAction(_toggleToc),
+          _ToggleFullscreenIntent: _CallbackAction(
+            () => unawaited(_toggleFullscreen()),
+          ),
+          _ExitFullscreenIntent: _CallbackAction(() {
+            if (_focus.isFullscreen) unawaited(_toggleFullscreen());
+          }),
           _OpenBookmarksIntent: _CallbackAction(() => _openBookmarks(context)),
           _SyncNowIntent: _CallbackAction(_syncNow),
           _OpenSearchIntent: _CallbackAction(() => _openSearch(context)),
@@ -710,6 +886,7 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
 
                   if (chapter.id != _lastChapterId) {
                     _lastChapterId = chapter.id;
+                    _audioHandler?.updateChapter(chapter.title);
                     _lastScrolledParagraphIndex = -1;
                     final oldCtrl = _scrollController;
                     setState(() {
@@ -971,6 +1148,18 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
       tooltip: 'Sincronizar ahora${hint('Ctrl+S')}',
     );
 
+    final fullscreenBtn = IconButton(
+      onPressed: () => unawaited(_toggleFullscreen()),
+      icon: Icon(
+        _focus.isFullscreen
+            ? Icons.fullscreen_exit_rounded
+            : Icons.fullscreen_rounded,
+      ),
+      tooltip: _focus.isFullscreen
+          ? 'Salir de pantalla completa${hint('F11')}'
+          : 'Pantalla completa${hint('F11')}',
+    );
+
     if (compact) {
       // Compact: only essentials visible, rest in overflow menu.
       return [
@@ -999,9 +1188,13 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
               case 'customize':
                 _openCustomizationSheet();
                 break;
+              case 'fullscreen':
+                unawaited(_toggleFullscreen());
+                break;
             }
           },
-          itemBuilder: (_) => const [
+          itemBuilder: (_) => [
+            ...const [
             PopupMenuItem(
               value: 'search',
               child: ListTile(
@@ -1050,6 +1243,23 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
                 contentPadding: EdgeInsets.zero,
               ),
             ),
+            ],
+            PopupMenuItem<String>(
+              value: 'fullscreen',
+              child: ListTile(
+                leading: Icon(
+                  _focus.isFullscreen
+                      ? Icons.fullscreen_exit_rounded
+                      : Icons.fullscreen_rounded,
+                ),
+                title: Text(
+                  _focus.isFullscreen
+                      ? 'Salir de pantalla completa'
+                      : 'Pantalla completa',
+                ),
+                contentPadding: EdgeInsets.zero,
+              ),
+            ),
           ],
         ),
         ttsBtn,
@@ -1068,6 +1278,7 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
       syncBtn,
       statsBtn,
       customizeBtn,
+      fullscreenBtn,
       ttsBtn,
       const SizedBox(width: 4),
     ];
@@ -2381,6 +2592,14 @@ class _PlayPauseIntent extends Intent {
   const _PlayPauseIntent();
 }
 
+class _ToggleFullscreenIntent extends Intent {
+  const _ToggleFullscreenIntent();
+}
+
+class _ExitFullscreenIntent extends Intent {
+  const _ExitFullscreenIntent();
+}
+
 class _PrevChapterIntent extends Intent {
   const _PrevChapterIntent();
 }
@@ -3049,5 +3268,28 @@ List<_VoiceTip> get _voiceTips {
           'Las voces "Neural", "Natural" o "Enhanced" suenan mucho mejor que las estándar',
         ),
       ];
+  }
+}
+
+/// Órdenes de los controles del sistema (notificación, pantalla de bloqueo,
+/// auriculares) traducidas a eventos del lector (ADR 12). Pausar es parar y
+/// reanudar desde la palabra en curso, que es como pausa el lector.
+class _BlocReadingCommands implements ReadingCommands {
+  _BlocReadingCommands(this._bloc);
+
+  final ReaderBloc _bloc;
+
+  @override
+  Future<void> play() async {
+    if (_bloc.isClosed) return;
+    final state = _bloc.state;
+    final hasText = state.currentChapter?.words.isNotEmpty ?? false;
+    if (!state.isTtsActive && hasText) _bloc.add(const ReaderTtsToggled());
+  }
+
+  @override
+  Future<void> pause() async {
+    if (_bloc.isClosed) return;
+    if (_bloc.state.isTtsActive) _bloc.add(const ReaderTtsToggled());
   }
 }

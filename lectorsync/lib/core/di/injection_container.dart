@@ -1,11 +1,16 @@
 import 'dart:async';
 
+import 'package:audio_service/audio_service.dart';
+import 'package:audio_session/audio_session.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:get_it/get_it.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../core/focus/focus_prefs.dart';
+import '../../core/focus/quiet_mode.dart';
+import '../../core/focus/system_fullscreen.dart';
 import '../../core/network/api_client.dart';
 import '../../core/storage/local_book_store.dart';
 import '../../core/storage/secure_storage.dart';
@@ -35,6 +40,7 @@ import '../../features/reader/data/repositories/tts_repository_proxy.dart';
 import '../../features/reader/domain/repositories/audio_player_repository.dart';
 import '../../features/reader/domain/repositories/reader_repository.dart';
 import '../../features/reader/domain/repositories/tts_repository.dart';
+import '../../features/reader/presentation/background/reading_audio_handler.dart';
 import '../../features/settings/data/repositories/local_preferences_repository.dart';
 import '../../features/settings/domain/repositories/preferences_repository.dart';
 
@@ -323,5 +329,52 @@ if (!sl.isRegistered<TtsRepositoryProxy>()) {
     sl.registerLazySingleton<PreferencesRepository>(
       () => LocalPreferencesRepository(),
     );
+  }
+
+  // Modo concentración y lectura en segundo plano (ADR 12).
+  if (!sl.isRegistered<SystemFullscreen>()) {
+    sl.registerLazySingleton<SystemFullscreen>(createSystemFullscreen);
+  }
+  if (!sl.isRegistered<QuietMode>()) {
+    sl.registerLazySingleton<QuietMode>(ChannelQuietMode.new);
+  }
+  if (!sl.isRegistered<FocusPrefs>()) {
+    sl.registerLazySingleton<FocusPrefs>(SharedFocusPrefs.new);
+  }
+  await _registerBackgroundReading();
+}
+
+/// Servicio de reproducción para que la voz siga con la pantalla apagada
+/// (ADR 12). Solo Android.
+///
+/// Si no arranca, no se registra nada y el lector vuelve al comportamiento
+/// anterior (parar la voz en segundo plano): nunca queda a medio funcionar.
+/// Se configura la sesión de audio al final, cuando el resto de plugins de
+/// audio ya cargó, porque la sesión es una sola para toda la app y el último
+/// en configurarla manda.
+Future<void> _registerBackgroundReading() async {
+  if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
+  if (sl.isRegistered<ReadingAudioHandler>()) return;
+  try {
+    final session = await AudioSession.instance;
+    await session.configure(const AudioSessionConfiguration.speech());
+    final handler = await AudioService.init(
+      builder: () => ReadingAudioHandler(session: session),
+      config: const AudioServiceConfig(
+        androidNotificationChannelId: 'com.lectorsync.lectorsync.reading',
+        androidNotificationChannelName: 'Lectura en voz alta',
+        // En Android 12+ el servicio no puede volver a primer plano desde
+        // segundo plano, así que no sale de él al pausar: ver
+        // ReadingAudioHandler.
+        androidStopForegroundOnPause: false,
+      ),
+    );
+    handler.bindInterruptions(
+      becomingNoisy: session.becomingNoisyEventStream,
+      interruptions: session.interruptionEventStream,
+    );
+    sl.registerSingleton<ReadingAudioHandler>(handler);
+  } catch (e) {
+    debugPrint('[BackgroundReading] no disponible: $e');
   }
 }
