@@ -1,3 +1,4 @@
+import { cleanPdfPages } from './pdf-cleanup.js';
 import type { BookParser, ParsedBook, ParsedChapter } from './types.js';
 import { countWords, MAX_WORDS_PER_CHAPTER } from './types.js';
 
@@ -15,12 +16,16 @@ export class PdfParser implements BookParser {
     }
 
     const outline = await this.extractOutline(doc);
-    const pageTexts = await this.extractPageTexts(doc);
+    const rawPageTexts = await this.extractPageTexts(doc);
 
-    const totalText = pageTexts.join('\n');
+    const totalText = rawPageTexts.join('\n');
     if (!totalText.trim()) {
       throw new Error('El PDF no contiene texto extraíble. Puede ser un PDF de solo imágenes.');
     }
+
+    // Limpiar índice, encabezados repetidos y palabras partidas ANTES de
+    // dividir en capítulos: es el texto que acabará leyendo el TTS.
+    const pageTexts = cleanPdfPages(rawPageTexts);
 
     const chapters = outline.length > 0
       ? this.splitByOutline(pageTexts, outline, numPages)
@@ -30,7 +35,9 @@ export class PdfParser implements BookParser {
       throw new Error('No se pudieron extraer capítulos del PDF.');
     }
 
-    const title = (await this.extractTitle(doc, pageTexts)) ?? this.titleFromFilename(filename) ?? 'PDF sin título';
+    // extractTitle usa `\s{3,}` como proxy de salto de línea, y cleanPdfPages
+    // colapsa justamente esos espacios — por eso recibe el texto sin limpiar.
+    const title = (await this.extractTitle(doc, rawPageTexts)) ?? this.titleFromFilename(filename) ?? 'PDF sin título';
     const author = await this.extractAuthor(doc);
     const language = 'es';
     const totalWords = chapters.reduce((sum, c) => sum + c.wordCount, 0);
