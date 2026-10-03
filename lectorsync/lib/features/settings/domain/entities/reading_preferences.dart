@@ -23,16 +23,21 @@ class ReadingPreferences extends Equatable {
     this.fontSize = 18.0,
     this.lineHeight = 1.65,
     this.letterSpacing = 0.0,
-    this.maxColumnWidth = 720.0,
+    this.maxColumnWidth = 600.0,
     this.palette = ReadingPalette.followApp,
-    this.justifyText = true,
+    this.justifyText = false,
   });
 
   final ReadingFontFamily fontFamily;
   final double fontSize;       // 14 – 32
   final double lineHeight;     // 1.3 – 2.2
   final double letterSpacing;  // 0 – 1.5
-  final double maxColumnWidth; // 480, 600, 720, double.infinity
+  /// 480, 600, 720 o `double.infinity`.
+  ///
+  /// 600 por defecto: con el cuerpo a 18 px son ~67 caracteres por línea,
+  /// justo la medida clásica de 66. Antes eran 720, que da ~80 y obliga al
+  /// ojo a buscar el arranque de cada línea.
+  final double maxColumnWidth;
   final ReadingPalette palette;
   final bool justifyText;
 
@@ -67,6 +72,14 @@ class ReadingPreferences extends Equatable {
     }
   }
 
+  /// Alineación del cuerpo de texto.
+  ///
+  /// Por defecto **no** se justifica. Justificar reparte el sobrante entre
+  /// los espacios de la línea, y eso solo queda bien si se pueden partir
+  /// palabras: Flutter no tiene guionado automático, así que en la columna
+  /// estrecha de un móvil (~45 caracteres) el resultado son huecos enormes
+  /// y "ríos" de blanco bajando por el párrafo. Con la bandera activada se
+  /// justifica igualmente — manda quien lee.
   TextAlign get textAlign =>
       justifyText ? TextAlign.justify : TextAlign.left;
 

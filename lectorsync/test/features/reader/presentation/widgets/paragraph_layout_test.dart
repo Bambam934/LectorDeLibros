@@ -1,127 +1,137 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:lectorsync/features/reader/presentation/reading_typography.dart';
 
-void main() {
-  group('Paragraph layout', () {
-    testWidgets('first sentence has 24px indent via Row + SizedBox',
-        (WidgetTester tester) async {
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: _TestParagraph(
-              sentences: ['First sentence here.', 'Second sentence here.'],
-            ),
-          ),
-        ),
-      );
-
-      final row = tester.widget<Row>(find.byType(Row));
-      final sizedBox = row.children.first as SizedBox;
-      expect(sizedBox.width, 24.0);
-
-      final expanded = row.children.last as Expanded;
-      expect(expanded.child, isA<Text>());
-
-      final indentedText = expanded.child as Text;
-      expect(indentedText.textAlign, TextAlign.justify);
-    });
-
-    testWidgets('non-first sentences are plain Text with justify',
-        (WidgetTester tester) async {
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: _TestParagraph(
-              sentences: ['First sentence.', 'Second sentence.', 'Third.'],
-            ),
-          ),
-        ),
-      );
-
-      final texts = tester.widgetList<Text>(find.byType(Text)).toList();
-      expect(texts.length, 3);
-
-      expect(texts[0].textAlign, TextAlign.justify);
-      expect(texts[1].textAlign, TextAlign.justify);
-      expect(texts[2].textAlign, TextAlign.justify);
-
-      expect(find.byType(Row), findsOneWidget);
-    });
-
-    testWidgets('single sentence paragraph has indent',
-        (WidgetTester tester) async {
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: _TestParagraph(
-              sentences: ['Only one sentence.'],
-            ),
-          ),
-        ),
-      );
-
-      expect(find.byType(Row), findsOneWidget);
-
-      final row = tester.widget<Row>(find.byType(Row));
-      final sizedBox = row.children.first as SizedBox;
-      expect(sizedBox.width, 24.0);
-    });
-
-    testWidgets('empty sentences renders nothing', (WidgetTester tester) async {
-      await tester.pumpWidget(
-        const MaterialApp(
-          home: Scaffold(
-            body: _TestParagraph(sentences: []),
-          ),
-        ),
-      );
-
-      expect(find.byType(Text), findsNothing);
-      expect(find.byType(Row), findsNothing);
-    });
-  });
-}
-
+/// Réplica del layout de un párrafo del lector.
+///
+/// `_ParagraphHighlightProxy` es privado y arrastra el BLoC entero, así que
+/// aquí se reproduce su estructura. Para que la copia no se despegue del
+/// original, **las medidas salen de `reading_typography.dart`**, que es de
+/// donde las toma el widget de verdad: si alguien cambia la sangría, este
+/// test la sigue.
 class _TestParagraph extends StatelessWidget {
-  const _TestParagraph({required this.sentences});
+  const _TestParagraph({
+    required this.sentences,
+    this.fontSize = 18,
+    this.isFirstParagraph = false,
+    this.textAlign = TextAlign.left,
+  });
 
   final List<String> sentences;
+  final double fontSize;
+  final bool isFirstParagraph;
+  final TextAlign textAlign;
 
   @override
   Widget build(BuildContext context) {
-    const indentWidth = 24.0;
-    final style = Theme.of(context).textTheme.bodyLarge;
+    final indent = paragraphIndent(
+      fontSize: fontSize,
+      isFirstParagraph: isFirstParagraph,
+    );
+    final style = TextStyle(fontSize: fontSize);
 
     if (sentences.isEmpty) return const SizedBox.shrink();
 
     return Padding(
-      padding: const EdgeInsets.only(left: 12, right: 12, top: 0, bottom: 4),
+      padding: const EdgeInsets.only(left: 12, right: 12, bottom: 4),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           for (var i = 0; i < sentences.length; i++)
-            i == 0
+            i == 0 && indent > 0
                 ? Row(
                     crossAxisAlignment: CrossAxisAlignment.baseline,
                     textBaseline: TextBaseline.alphabetic,
                     children: [
-                      const SizedBox(width: indentWidth),
+                      SizedBox(width: indent),
                       Expanded(
                         child: Text(
                           sentences[i],
-                          textAlign: TextAlign.justify,
+                          textAlign: textAlign,
                           style: style,
                         ),
                       ),
                     ],
                   )
-                : Text(
-                    sentences[i],
-                    textAlign: TextAlign.justify,
-                    style: style,
-                  ),
+                : Text(sentences[i], textAlign: textAlign, style: style),
         ],
       ),
     );
   }
+}
+
+Future<void> _pump(WidgetTester tester, Widget child) => tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: child)),
+    );
+
+void main() {
+  group('Layout de párrafo', () {
+    testWidgets('la primera oración se sangra con un Row + SizedBox',
+        (tester) async {
+      await _pump(
+        tester,
+        const _TestParagraph(
+          sentences: ['Primera oración.', 'Segunda oración.'],
+        ),
+      );
+
+      final row = tester.widget<Row>(find.byType(Row));
+      final spacer = row.children.first as SizedBox;
+
+      expect(spacer.width, paragraphIndent(fontSize: 18));
+      expect(row.children.last, isA<Expanded>());
+    });
+
+    testWidgets('la sangría crece con el tamaño de letra', (tester) async {
+      await _pump(
+        tester,
+        const _TestParagraph(sentences: ['Texto grande.'], fontSize: 32),
+      );
+
+      final row = tester.widget<Row>(find.byType(Row));
+      final spacer = row.children.first as SizedBox;
+
+      expect(spacer.width, paragraphIndent(fontSize: 32));
+      expect(spacer.width, greaterThan(paragraphIndent(fontSize: 18)));
+    });
+
+    testWidgets('el primer párrafo del capítulo va sin Row de sangría',
+        (tester) async {
+      await _pump(
+        tester,
+        const _TestParagraph(
+          sentences: ['Arranque del capítulo.', 'Sigue el texto.'],
+          isFirstParagraph: true,
+        ),
+      );
+
+      expect(find.byType(Row), findsNothing);
+      expect(find.byType(Text), findsNWidgets(2));
+    });
+
+    testWidgets('todas las oraciones comparten la alineación elegida',
+        (tester) async {
+      await _pump(
+        tester,
+        const _TestParagraph(
+          sentences: ['Una.', 'Dos.', 'Tres.'],
+          textAlign: TextAlign.justify,
+        ),
+      );
+
+      final texts = tester.widgetList<Text>(find.byType(Text)).toList();
+
+      expect(texts.length, 3);
+      for (final t in texts) {
+        expect(t.textAlign, TextAlign.justify);
+      }
+    });
+
+    testWidgets('sin oraciones no se pinta nada', (tester) async {
+      await _pump(tester, const _TestParagraph(sentences: []));
+
+      expect(find.byType(Text), findsNothing);
+      expect(find.byType(Row), findsNothing);
+    });
+  });
 }

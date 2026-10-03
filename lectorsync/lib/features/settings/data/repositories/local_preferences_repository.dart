@@ -33,11 +33,14 @@ class LocalPreferencesRepository implements PreferencesRepository {
       fontSize: prefs.getDouble(_kFontSize) ?? 18.0,
       lineHeight: prefs.getDouble(_kLineHeight) ?? 1.7,
       letterSpacing: prefs.getDouble(_kLetterSpacing) ?? 0.0,
-      maxColumnWidth: (prefs.getDouble(_kMaxColumnWidth) ?? 720.0) < 0
+      maxColumnWidth: (prefs.getDouble(_kMaxColumnWidth) ?? 600.0) < 0
           ? double.infinity
-          : (prefs.getDouble(_kMaxColumnWidth) ?? 720.0),
+          : (prefs.getDouble(_kMaxColumnWidth) ?? 600.0),
       palette: palette,
-      justifyText: prefs.getBool(_kJustifyText) ?? true,
+      // Mismo default que la entidad: sin guionado automático, justificar
+      // en una columna de móvil abre huecos entre palabras. Quien lo quiera
+      // lo activa en el panel y su elección se persiste aquí.
+      justifyText: prefs.getBool(_kJustifyText) ?? false,
     );
   }
 
