@@ -7,6 +7,7 @@ import '../../../../core/constants/route_constants.dart';
 import '../../../../core/di/injection_container.dart';
 import '../../../../core/layout/breakpoints.dart';
 import '../../../../core/theme/theme_cubit.dart';
+import '../../../../core/widgets/loading_view.dart';
 import '../../../../shared/widgets/empty_state.dart';
 import '../../../auth/presentation/cubit/auth_cubit.dart';
 import '../../../reader/data/repositories/reading_stats_repository.dart';
@@ -148,10 +149,23 @@ class _LibraryViewState extends State<_LibraryView> {
           },
           builder: (context, state) {
             if (state.status == LibraryStatus.loading && state.books.isEmpty) {
-              return const Center(child: CircularProgressIndicator());
+              return const LoadingView(message: 'Cargando tu biblioteca');
             }
 
-            return bp.when(
+            // La importación y el borrado se muestran ENCIMA de la lista.
+            // Antes la condición de arriba exigía `books.isEmpty`, así que
+            // con la biblioteca ya poblada no aparecía absolutamente nada
+            // mientras se analizaba el archivo: la app parecía colgada.
+            return LoadingOverlay(
+              visible: state.isBusy,
+              message: state.operation == LibraryOperation.importing
+                  ? 'Analizando ${state.pendingFilename ?? 'el libro'}'
+                  : 'Eliminando el libro',
+              detail: state.operation == LibraryOperation.importing
+                  ? 'Se extrae el texto y se divide en capítulos. En un PDF '
+                      'largo puede tardar unos segundos; solo pasa esta vez.'
+                  : null,
+              child: bp.when(
               compact: () => _CompactLayout(
                 searchController: _searchController,
                 searchQuery: _searchQuery,
@@ -183,6 +197,7 @@ class _LibraryViewState extends State<_LibraryView> {
                 filtered: _filterBooks(state.books),
                 selectedNavIndex: _selectedNavIndex,
                 onNavIndexChanged: (i) => setState(() => _selectedNavIndex = i),
+              ),
               ),
             );
           },

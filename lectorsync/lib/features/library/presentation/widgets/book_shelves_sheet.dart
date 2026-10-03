@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../../core/di/injection_container.dart';
+import '../../../../core/widgets/loading_view.dart';
 import '../../data/repositories/book_shelf_repository.dart';
 
 /// Sheet for assigning / removing a book from named shelves.
@@ -155,7 +156,7 @@ class _BookShelvesSheetState extends State<BookShelvesSheet> {
               const Divider(height: 1),
               Expanded(
                 child: _loading
-                    ? const Center(child: CircularProgressIndicator())
+                    ? const LoadingView(message: 'Cargando tus estanterías')
                     : SingleChildScrollView(
                         controller: scrollController,
                         padding: const EdgeInsets.all(20),
