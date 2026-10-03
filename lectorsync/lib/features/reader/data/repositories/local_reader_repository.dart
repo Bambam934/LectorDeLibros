@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show compute;
 import 'package:fpdart/fpdart.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
 
@@ -245,11 +246,16 @@ class LocalReaderRepository implements ReaderRepository {
 
   // ---------- format parsers ----------
 
-  Future<List<Chapter>> _parsePdf(File file) async {
+  // Fuera del hilo de la interfaz: extraer cientos de páginas congelaba la
+  // pantalla de carga, y con ella sus mensajes de espera, durante segundos.
+  // `pdf_page_locator.dart` ya usa Syncfusion en un isolate del mismo modo.
+  Future<List<Chapter>> _parsePdf(File file) => compute(_parsePdfFile, file.path);
+
+  static List<Chapter> _parsePdfFile(String path) {
     // PdfDocument carga todo el PDF en memoria. Para libros muy grandes
     // (>100MB) puede ser costoso, pero la API de syncfusion no soporta
     // streaming, así que es lo que hay.
-    final bytes = await file.readAsBytes();
+    final bytes = File(path).readAsBytesSync();
     final document = PdfDocument(inputBytes: bytes);
     try {
       final extractor = PdfTextExtractor(document);
@@ -441,7 +447,7 @@ class LocalReaderRepository implements ReaderRepository {
   /// Divide texto plano en capítulos de aproximadamente
   /// [_targetWordsPerChapter] palabras, cortando en saltos de párrafo
   /// para no partir oraciones por la mitad.
-  List<Chapter> _splitByWordCount(String content) {
+  static List<Chapter> _splitByWordCount(String content) {
     final cleaned = reflowExtractedText(content).trim();
     if (cleaned.isEmpty) return const [];
 
@@ -498,9 +504,10 @@ class LocalReaderRepository implements ReaderRepository {
 
   // ---------- helpers ----------
 
-  String _chapterId(int index) => 'ch-${(index + 1).toString().padLeft(4, '0')}';
+  static String _chapterId(int index) =>
+      'ch-${(index + 1).toString().padLeft(4, '0')}';
 
-  List<String> _tokenize(String content) => content
+  static List<String> _tokenize(String content) => content
       .split(RegExp(r'\s+'))
       .map((w) => w.trim())
       .where((w) => w.isNotEmpty)
