@@ -136,6 +136,12 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
   bool _streamsSubscribed = false;
   bool _disposed = false;
 
+  /// El bloc del libro, guardado al montar. En `dispose()` el elemento ya
+  /// está desmontado y `context.read` lanza: la excepción abortaba el
+  /// desmontaje, el `BlocProvider` no cerraba el bloc y la voz seguía
+  /// leyendo fuera del libro.
+  late final ReaderBloc _bloc;
+
   /// Ruta del PDF de origen, cuando el libro se importó de uno. Habilita el
   /// botón que enseña la fórmula tal y como está maquetada en el libro.
   String? _pdfSourcePath;
@@ -633,6 +639,7 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
     // setState sobre un Element defunct.
     if (!_streamsSubscribed) {
       _streamsSubscribed = true;
+      _bloc = context.read<ReaderBloc>();
       _listenEstimating();
       _listenTtsStatus();
       _attachBackgroundReading();
@@ -705,12 +712,10 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
     if (_sessionStopwatch.isRunning) {
       _sessionStopwatch.stop();
       final wordsRead =
-          (context.read<ReaderBloc>().state.currentWordIndex -
-                  _sessionStartWordIndex)
-              .abs();
+          (_bloc.state.currentWordIndex - _sessionStartWordIndex).abs();
       if (_sessionStopwatch.elapsed.inSeconds > 5 && wordsRead > 0) {
         sl<ReadingStatsRepository>().recordSession(
-          bookId: context.read<ReaderBloc>().state.bookId,
+          bookId: _bloc.state.bookId,
           duration: _sessionStopwatch.elapsed,
           wordsRead: wordsRead,
         );
