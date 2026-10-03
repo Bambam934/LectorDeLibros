@@ -34,6 +34,7 @@ class AudioTtsRepository implements TtsRepository {
 
   StreamSubscription<Duration>? _positionSub;
   StreamSubscription<bool>? _playingSub;
+  StreamSubscription<void>? _completedSub;
 
   @override
   Stream<int> get wordIndexStream => _wordIndexController.stream;
@@ -125,6 +126,8 @@ class AudioTtsRepository implements TtsRepository {
     _positionSub = null;
     _playingSub?.cancel();
     _playingSub = null;
+    _completedSub?.cancel();
+    _completedSub = null;
     _lastEmittedWordIndex = -1;
     _wordTimestamps = [];
 
@@ -142,6 +145,7 @@ class AudioTtsRepository implements TtsRepository {
   Future<void> dispose() async {
     _positionSub?.cancel();
     _playingSub?.cancel();
+    _completedSub?.cancel();
     await _audioPlayer.dispose();
     await _wordIndexController.close();
     await _statusController.close();
@@ -164,6 +168,7 @@ class AudioTtsRepository implements TtsRepository {
   void _startPositionListener() {
     _positionSub?.cancel();
     _playingSub?.cancel();
+    _completedSub?.cancel();
 
     _positionSub = _audioPlayer.positionStream.listen((position) {
       _onPositionUpdate(position.inMilliseconds);
@@ -174,6 +179,16 @@ class AudioTtsRepository implements TtsRepository {
         _emit(TtsPlaybackStatus.completed);
       } else if (isPlaying && _currentStatus != TtsPlaybackStatus.playing) {
         _emit(TtsPlaybackStatus.playing);
+      }
+    });
+
+    // El fin del capítulo. Sin esto el lector no pasaba solo al siguiente:
+    // `playing` sigue en true al terminar y la condición de arriba nunca se
+    // cumplía. Solo cuenta si se estaba leyendo, para no tomar por final un
+    // estado `completed` que quedara de la pista anterior.
+    _completedSub = _audioPlayer.completedStream.listen((_) {
+      if (_currentStatus == TtsPlaybackStatus.playing) {
+        _emit(TtsPlaybackStatus.completed);
       }
     });
   }

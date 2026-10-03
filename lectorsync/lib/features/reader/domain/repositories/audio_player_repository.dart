@@ -5,6 +5,10 @@ abstract interface class AudioPlayerRepository {
   Stream<Duration> get positionStream;
   Stream<Duration?> get durationStream;
   Stream<bool> get playingStream;
+
+  /// Emite cuando el audio llega al final. No se puede deducir de
+  /// [playingStream]: en just_audio `playing` sigue en true al terminar.
+  Stream<void> get completedStream;
   bool get isPlaying;
   Duration? get duration;
 

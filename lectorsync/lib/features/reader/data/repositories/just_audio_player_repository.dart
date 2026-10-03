@@ -17,6 +17,13 @@ class JustAudioPlayerRepository implements AudioPlayerRepository {
   @override
   Stream<bool> get playingStream => _player.playingStream;
 
+  // `playing` sigue en true al llegar al final (just_audio 0.10.5, doc de
+  // `play()`): el fin de pista solo se ve en `processingState`.
+  @override
+  Stream<void> get completedStream => _player.processingStateStream
+      .where((s) => s == ProcessingState.completed)
+      .map((_) {});
+
   @override
   bool get isPlaying => _player.playing;
 
