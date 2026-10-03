@@ -249,9 +249,16 @@ Future<void> configureDependencies() async {
     sl.registerLazySingleton<ReadingStatsRepository>(ReadingStatsRepository.new);
   }
 
-  if (!sl.isRegistered<ChapterCacheRepository>()) {
+  // La caché de capítulos es el respaldo sin red del modo conectado. En modo
+  // offline duplicaba en SharedPreferences el texto entero de cada capítulo
+  // abierto, que ya vive en el archivo del libro y en su `.chapters.vN.json`:
+  // ese archivo de preferencias crecía sin límite, se carga entero al
+  // arrancar y se reescribe entero en cada guardado de progreso. Se limpia
+  // lo que dejaron las versiones anteriores (una vez; después no hay nada).
+  if (!_kOfflineMode && !sl.isRegistered<ChapterCacheRepository>()) {
     sl.registerLazySingleton<ChapterCacheRepository>(ChapterCacheRepository.new);
   }
+  if (_kOfflineMode) unawaited(ChapterCacheRepository().clearAll());
 
   if (!sl.isRegistered<VoicePresetRepository>()) {
     sl.registerLazySingleton<VoicePresetRepository>(VoicePresetRepository.new);
