@@ -5,6 +5,7 @@ import 'package:fpdart/fpdart.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
 
 import '../../../../core/errors/failures.dart';
+import '../../../../core/storage/chapter_cache_files.dart';
 import '../../../../core/storage/local_book_store.dart';
 import '../../domain/entities/chapter.dart';
 import '../../domain/entities/chapter_audio.dart';
@@ -220,6 +221,8 @@ class LocalReaderRepository implements ReaderRepository {
       jsonEncode(chapters.map(_chapterToJson).toList(growable: false)),
       flush: true,
     );
+    // Las cachés de versiones anteriores del parser ya no se leen nunca.
+    await deleteChapterCaches(storedPath, keep: cachePath);
     await _store.updateBookProgress(
       bookId: bookId,
       totalChapters: chapters.length,
@@ -237,9 +240,7 @@ class LocalReaderRepository implements ReaderRepository {
     // deja de borrar los rótulos numerados en mayúsculas ("EJEMPLO 3").
     // Subir esta versión al cambiar cualquier parser, o el fix no se ve en
     // libros ya importados.
-    final dot = storedPath.lastIndexOf('.');
-    final base = dot > 0 ? storedPath.substring(0, dot) : storedPath;
-    return '$base.chapters.v4.json';
+    return '${chapterCacheBase(storedPath)}v4.json';
   }
 
   // ---------- format parsers ----------

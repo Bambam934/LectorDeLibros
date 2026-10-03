@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../../core/errors/failures.dart';
+import '../../../../core/storage/chapter_cache_files.dart';
 import '../../../../core/storage/local_book_store.dart';
 import '../../domain/entities/book.dart';
 import '../../domain/repositories/library_repository.dart';
@@ -102,6 +103,8 @@ class LocalLibraryRepository implements LibraryRepository, LocalBookStore {
           await file.delete();
         }
       } catch (_) {}
+      // Y sus cachés de capítulos, que si no quedaban huérfanas para siempre.
+      await deleteChapterCaches(entry.storedPath);
 
       await _writeRawEntries(entries);
       return const Right(true);
