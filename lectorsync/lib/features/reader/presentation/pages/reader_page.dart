@@ -351,7 +351,11 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
   void _listenTtsStatus() {
     _ttsStatusSub?.cancel();
     final bloc = context.read<ReaderBloc>();
-    _ttsStatusSub = sl<DeviceTtsRepository>().statusStream.listen((status) {
+    // Por el proxy y no por `DeviceTtsRepository`: con la voz de servidor el
+    // motor del dispositivo nunca emite `playing`, el cronómetro no arrancaba
+    // y las sesiones de lectura no se registraban en las estadísticas. El
+    // proxy reenvía el estado del motor que esté activo.
+    _ttsStatusSub = sl<TtsRepository>().statusStream.listen((status) {
       if (status == TtsPlaybackStatus.playing) {
         if (!_sessionStopwatch.isRunning) {
           _sessionStopwatch.start();
