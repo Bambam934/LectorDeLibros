@@ -11,6 +11,15 @@ class DesktopTtsAdapter implements TtsAdapter {
   final FlutterTts _tts;
   bool _isInitialized = false;
 
+  /// Si el motor ya recibió algún `speak`. En Windows, el `stop` nativo de
+  /// flutter_tts 4.2.5 (rama WinRT, no SAPI5) responde al `speak` pendiente
+  /// sin comprobar que exista: con `awaitSpeakCompletion(true)` y ningún
+  /// `speak` todavía, desreferencia un puntero nulo y cierra la app. El
+  /// lector inicializa el motor al abrir el libro y para la voz al cerrarlo,
+  /// así que abrir un libro y volver atrás sin reproducir la tumbaba. Antes
+  /// del primer `speak` no hay nada que parar.
+  bool _hasSpoken = false;
+
   @override
   TtsCapabilities get capabilities => TtsCapabilities.desktop;
 
@@ -49,10 +58,16 @@ class DesktopTtsAdapter implements TtsAdapter {
   }
 
   @override
-  Future<dynamic> speak(String text) => _tts.speak(text);
+  Future<dynamic> speak(String text) {
+    _hasSpoken = true;
+    return _tts.speak(text);
+  }
 
   @override
-  Future<void> stop() => _tts.stop();
+  Future<void> stop() async {
+    if (!_hasSpoken) return;
+    await _tts.stop();
+  }
 
   @override
   Future<void> setSpeechRate(double rate) => _tts.setSpeechRate(rate);
@@ -83,6 +98,7 @@ class DesktopTtsAdapter implements TtsAdapter {
 
   @override
   Future<void> dispose() async {
+    if (!_hasSpoken) return;
     try {
       await _tts.stop().timeout(const Duration(milliseconds: 600));
     } catch (_) {}
