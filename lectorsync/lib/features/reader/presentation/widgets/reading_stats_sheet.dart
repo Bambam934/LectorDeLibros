@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../../core/di/injection_container.dart';
+import '../../../../core/widgets/loading_view.dart';
 import '../../data/repositories/reading_stats_repository.dart';
 
 class ReadingStatsSheet extends StatefulWidget {
@@ -129,10 +130,7 @@ class _ReadingStatsSheetState extends State<ReadingStatsSheet> {
             ),
             const Divider(height: 1),
             if (_loading)
-              const Padding(
-                padding: EdgeInsets.all(32),
-                child: CircularProgressIndicator(),
-              )
+              const LoadingView(message: 'Calculando tus estadísticas')
             else ...[
               const SizedBox(height: 16),
               // Daily goal widget

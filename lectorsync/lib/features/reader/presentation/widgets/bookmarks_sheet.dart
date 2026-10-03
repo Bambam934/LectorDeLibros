@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../../../core/di/injection_container.dart';
+import '../../../../core/widgets/loading_view.dart';
 import '../../data/repositories/bookmark_repository.dart';
 import '../../domain/entities/bookmark.dart';
 
@@ -297,7 +298,7 @@ class _BookmarksSheetState extends State<BookmarksSheet> {
           const Divider(height: 1),
           Expanded(
             child: _loading
-                ? const Center(child: CircularProgressIndicator())
+                ? const LoadingView(message: 'Cargando tus marcadores')
                 : _bookmarks.isEmpty
                     ? Center(
                         child: Column(

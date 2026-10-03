@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../../core/widgets/loading_view.dart';
 import '../../domain/entities/chapter.dart';
 import '../../domain/repositories/reader_repository.dart';
 
@@ -246,7 +247,10 @@ class _SearchResultsViewState extends State<_SearchResultsView> {
     final scheme = Theme.of(context).colorScheme;
 
     if (_searching) {
-      return const Center(child: CircularProgressIndicator());
+      return const LoadingView(
+        message: 'Buscando en el libro',
+        detail: 'Se recorren los capítulos ya descargados.',
+      );
     }
 
     if (_results.isEmpty) {

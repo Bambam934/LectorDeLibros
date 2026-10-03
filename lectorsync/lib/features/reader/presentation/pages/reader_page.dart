@@ -8,12 +8,17 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../../core/di/injection_container.dart';
 import '../../../../core/layout/breakpoints.dart';
+import '../../../../core/storage/local_book_store.dart';
 import '../../../../core/sync/client_id_service.dart';
 import '../../../../core/sync/sync_stream_client.dart';
 import '../../../../core/utils/haptics.dart';
+import '../../../../core/utils/sorted_lookup.dart';
+import '../../../../core/widgets/loading_view.dart';
 import '../../../settings/domain/entities/reading_preferences.dart';
 import '../../../settings/presentation/cubit/preferences_cubit.dart';
 import '../../../settings/presentation/widgets/reading_customization_sheet.dart';
+import '../../data/parsing/formula_detector.dart';
+import '../../data/parsing/pdf_page_locator.dart';
 import '../../data/repositories/audio_tts_repository.dart';
 import '../../data/repositories/device_tts_repository.dart';
 import '../../data/repositories/tts/tts_capabilities.dart';
@@ -25,6 +30,8 @@ import '../../data/repositories/reading_stats_repository.dart';
 import '../../domain/entities/bookmark.dart';
 import '../../domain/repositories/reader_repository.dart';
 import '../bloc/reader_bloc.dart';
+import '../reading_typography.dart';
+import '../widgets/formula_source_sheet.dart';
 import '../bloc/reader_event.dart';
 import '../bloc/reader_state.dart';
 import '../widgets/ambient_sound_sheet.dart';
@@ -76,15 +83,16 @@ class ReaderPage extends StatelessWidget {
               initialWordIndex: initialWordIndex,
             ),
           ),
-      child: _ReaderView(bookTitle: bookTitle),
+      child: _ReaderView(bookTitle: bookTitle, bookId: bookId),
     );
   }
 }
 
 class _ReaderView extends StatefulWidget {
-  const _ReaderView({required this.bookTitle});
+  const _ReaderView({required this.bookTitle, required this.bookId});
 
   final String bookTitle;
+  final String bookId;
 
   @override
   State<_ReaderView> createState() => _ReaderViewState();
@@ -106,9 +114,25 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
   // durante la reproducción, desenganchamos (dejamos de arrastrar la vista)
   // y mostramos un botón "Volver a la lectura" que vuelve a engancharlo.
   final ValueNotifier<bool> _followVoice = ValueNotifier<bool>(true);
+
+  /// Contador de peticiones explícitas de re-centrado, que solo incrementa
+  /// el botón "Volver a la lectura".
+  ///
+  /// Separado de [_followVoice] a propósito. Antes los párrafos escuchaban
+  /// directamente `followVoice`, y como la lectura al pararse lo vuelve a
+  /// poner en `true` para la próxima sesión, ese simple re-armado arrastraba
+  /// la pantalla de vuelta a la voz aunque el usuario se hubiera ido a leer
+  /// otra cosa por su cuenta. Un contador tampoco sufre el otro problema del
+  /// notificador booleano: `ValueNotifier` no avisa si el valor no cambia, así
+  /// que pulsar el botón estando ya enganchado no hacía nada.
+  final ValueNotifier<int> _recenterRequests = ValueNotifier<int>(0);
   bool _showReturnButton = false;
   bool _streamsSubscribed = false;
   bool _disposed = false;
+
+  /// Ruta del PDF de origen, cuando el libro se importó de uno. Habilita el
+  /// botón que enseña la fórmula tal y como está maquetada en el libro.
+  String? _pdfSourcePath;
 
   // Reading session tracking.
   final Stopwatch _sessionStopwatch = Stopwatch();
@@ -221,32 +245,27 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
     }
   }
 
-  int _findParagraphIndex(int wordIndex, List<int> wordOffsets) {
-    if (wordOffsets.isEmpty) return -1;
-    int lo = 0, hi = wordOffsets.length - 1, result = 0;
-    while (lo <= hi) {
-      final mid = (lo + hi) ~/ 2;
-      if (wordOffsets[mid] <= wordIndex) {
-        result = mid;
-        lo = mid + 1;
-      } else {
-        hi = mid - 1;
-      }
-    }
-    return result;
-  }
+  /// Párrafo que contiene [wordIndex], o -1 si no se puede saber.
+  int _findParagraphIndex(int wordIndex, List<int> wordOffsets) =>
+      lastOffsetAtOrBefore(wordOffsets, wordIndex);
 
-  void _scrollToParagraph(int currentWordIndex) {
-    if (!_followVoice.value) return;
+  /// Lleva la vista al párrafo que contiene [currentWordIndex].
+  ///
+  /// Devuelve `true` si el párrafo estaba localizado y el desplazamiento se
+  /// puso en marcha. Quien ofrezca al usuario un control para volver a la
+  /// lectura necesita saberlo: esconderlo tras un intento que no movió nada
+  /// deja al lector perdido y sin forma de reintentar.
+  bool _scrollToParagraph(int currentWordIndex) {
+    if (!_followVoice.value) return false;
     final ctrl = _scrollController;
-    if (ctrl == null || !ctrl.hasClients) return;
-    if (_wordOffsets.isEmpty || _paragraphKeys.isEmpty) return;
+    if (ctrl == null || !ctrl.hasClients) return false;
+    if (_wordOffsets.isEmpty || _paragraphKeys.isEmpty) return false;
 
     final paraIndex = _findParagraphIndex(currentWordIndex, _wordOffsets);
-    if (paraIndex < 0 || paraIndex >= _paragraphKeys.length) return;
+    if (paraIndex < 0 || paraIndex >= _paragraphKeys.length) return false;
     // Solo scrollear cuando cambia el párrafo activo, no en cada palabra.
     // Evita animaciones superpuestas que causan jitter/stutter.
-    if (paraIndex == _lastScrolledParagraphIndex) return;
+    if (paraIndex == _lastScrolledParagraphIndex) return true;
 
     _lastScrolledParagraphIndex = paraIndex;
 
@@ -258,7 +277,7 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
         curve: Curves.easeOutCubic,
         alignment: 0.3,
       );
-      return;
+      return true;
     }
 
     // El párrafo objetivo no está construido: el ListView.builder lo descartó
@@ -280,6 +299,7 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
         alignment: 0.3,
       );
     });
+    return true;
   }
 
   void _updateWordOffsets(List<int> offsets) {
@@ -300,10 +320,25 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
     _followVoice.value = true;
     _lastScrolledParagraphIndex = -1;
     final idx = context.read<ReaderBloc>().state.currentWordIndex;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_disposed && mounted) _scrollToParagraph(idx);
-    });
-    if (!_disposed && mounted) setState(() => _showReturnButton = false);
+
+    // Primero, el desplazamiento a nivel de PÁRRAFO, que es el que siempre
+    // funciona: `_scrollToParagraph` ya cubre los dos casos —párrafo montado
+    // (`ensureVisible`) y párrafo descartado por el ListView (salto
+    // aproximado más corrección en el frame siguiente, usando su GlobalKey,
+    // que existe siempre)—. Delegar solo en el re-centrado por oración dejaba
+    // al usuario sin nada cuando el salto aterrizaba lejos del objetivo.
+    final scrolled = _scrollToParagraph(idx);
+
+    // Y después, el afinado a nivel de ORACIÓN para caer en la línea exacta.
+    // Lo atiende el párrafo que contenga la palabra en curso.
+    _recenterRequests.value++;
+
+    // El botón solo se esconde si de verdad hubo a dónde ir. Escondiéndolo
+    // siempre se llegaba a un callejón sin salida: con la voz ya parada,
+    // `_onUserScroll` sale por `isTtsActive` y el botón no volvía a aparecer.
+    if (scrolled && !_disposed && mounted) {
+      setState(() => _showReturnButton = false);
+    }
   }
 
   void _listenEstimating() {
@@ -418,6 +453,25 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _resolvePdfSource();
+  }
+
+  /// Averigua si el libro procede de un PDF que sigue en el dispositivo.
+  ///
+  /// Falla en silencio: no poder enseñar la página original es una función de
+  /// más, nunca un motivo para estropear la lectura.
+  Future<void> _resolvePdfSource() async {
+    if (!sl.isRegistered<LocalBookStore>()) return;
+    try {
+      // Del widget y no del bloc: en initState el ReaderStarted acaba de
+      // despacharse y el estado todavía tiene el bookId vacío.
+      final path = await sl<LocalBookStore>().resolveStoredPath(widget.bookId);
+      if (_disposed || !mounted) return;
+      if (path == null || !path.toLowerCase().endsWith('.pdf')) return;
+      setState(() => _pdfSourcePath = path);
+    } catch (_) {
+      // Catálogo no disponible o libro sin archivo local.
+    }
   }
 
   @override
@@ -508,6 +562,7 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
     _preferencesCubit.close();
     _scrollController?.dispose();
     _followVoice.dispose();
+    _recenterRequests.dispose();
     super.dispose();
   }
 
@@ -742,7 +797,16 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
               builder: (context, state) {
                 if (state.status == ReaderStatus.loading &&
                     state.currentChapter == null) {
-                  return const Center(child: CircularProgressIndicator());
+                  // Primera apertura: se está extrayendo el texto del
+                  // archivo y partiéndolo en capítulos. En un PDF largo son
+                  // varios segundos, y merece la pena decir que solo pasa
+                  // una vez en lugar de dejar un spinner mudo.
+                  return LoadingView(
+                    message: 'Preparando el libro',
+                    detail: 'Se analiza el archivo y se divide en capítulos. '
+                        'La próxima vez abrirá al instante.',
+                    color: colors.foreground,
+                  );
                 }
 
                 if (state.chapters.isEmpty) {
@@ -1027,6 +1091,7 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
       immersive: _immersive,
       scrollController: _scrollController,
       followVoice: _followVoice,
+      recenterRequests: _recenterRequests,
       onUserScroll: _onUserScroll,
       paragraphKeys: _paragraphKeys,
       onToggleImmersive: _toggleImmersive,
@@ -1036,6 +1101,7 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
       speedBarVisible: _speedBarVisible,
       onToggleSpeedBar: _toggleSpeedBar,
       isEstimatingProgress: _isEstimatingProgress,
+      pdfSourcePath: _pdfSourcePath,
     );
   }
 
@@ -1068,6 +1134,7 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
             immersive: _immersive,
             scrollController: _scrollController,
             followVoice: _followVoice,
+            recenterRequests: _recenterRequests,
             onUserScroll: _onUserScroll,
             paragraphKeys: _paragraphKeys,
             onToggleImmersive: _toggleImmersive,
@@ -1077,6 +1144,7 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
             speedBarVisible: _speedBarVisible,
             onToggleSpeedBar: _toggleSpeedBar,
             isEstimatingProgress: _isEstimatingProgress,
+            pdfSourcePath: _pdfSourcePath,
           ),
         ),
       ],
@@ -1113,6 +1181,7 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
             immersive: _immersive,
             scrollController: _scrollController,
             followVoice: _followVoice,
+            recenterRequests: _recenterRequests,
             onUserScroll: _onUserScroll,
             paragraphKeys: _paragraphKeys,
             onToggleImmersive: _toggleImmersive,
@@ -1122,6 +1191,7 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
             speedBarVisible: _speedBarVisible,
             onToggleSpeedBar: _toggleSpeedBar,
             isEstimatingProgress: _isEstimatingProgress,
+            pdfSourcePath: _pdfSourcePath,
           ),
         ),
       ],
@@ -1234,6 +1304,7 @@ class _ReaderBody extends StatefulWidget {
     required this.immersive,
     required this.scrollController,
     required this.followVoice,
+    required this.recenterRequests,
     required this.onUserScroll,
     required this.paragraphKeys,
     required this.onToggleImmersive,
@@ -1243,6 +1314,7 @@ class _ReaderBody extends StatefulWidget {
     required this.speedBarVisible,
     required this.onToggleSpeedBar,
     this.isEstimatingProgress = false,
+    this.pdfSourcePath,
   });
 
   final ReaderState state;
@@ -1251,6 +1323,9 @@ class _ReaderBody extends StatefulWidget {
   final bool immersive;
   final ScrollController? scrollController;
   final ValueListenable<bool> followVoice;
+
+  /// Peticiones explícitas de re-centrado del botón "Volver a la lectura".
+  final ValueListenable<int> recenterRequests;
   final VoidCallback onUserScroll;
   final List<GlobalKey> paragraphKeys;
   final VoidCallback onToggleImmersive;
@@ -1261,6 +1336,10 @@ class _ReaderBody extends StatefulWidget {
   final VoidCallback onToggleSpeedBar;
   final bool isEstimatingProgress;
 
+  /// Ruta del PDF original, si el libro vino de uno. Habilita el botón
+  /// "Ver en el libro" de los bloques de fórmula.
+  final String? pdfSourcePath;
+
   @override
   State<_ReaderBody> createState() => _ReaderBodyState();
 }
@@ -1270,7 +1349,29 @@ class _ReaderBodyState extends State<_ReaderBody> {
   List<String> _cachedParagraphs = const [];
   List<int> _cachedWordOffsets = const [];
   List<GlobalKey> _cachedKeys = const [];
+  List<bool> _cachedFormulas = const [];
   int _cachedChapterWordMax = 0;
+
+  /// Vive en el State y no en cada bloque de fórmula: el índice de páginas
+  /// del PDF se construye una vez y lo comparten todas las fórmulas del libro.
+  final PdfPageLocator _pageLocator = PdfPageLocator();
+
+  void _showFormulaSource(BuildContext context, String fragment) {
+    final path = widget.pdfSourcePath;
+    if (path == null) return;
+    FormulaSourceSheet.show(
+      context,
+      pdfPath: path,
+      fragment: fragment,
+      locator: _pageLocator,
+    );
+  }
+
+  @override
+  void dispose() {
+    _pageLocator.clear();
+    super.dispose();
+  }
 
   void _recomputeIfNeeded() {
     final chapter = widget.state.currentChapter;
@@ -1288,6 +1389,9 @@ class _ReaderBodyState extends State<_ReaderBody> {
     }
     _cachedChapterId = chapter.id;
     _cachedParagraphs = paragraphs;
+    // Se calcula una vez por capítulo: el itemBuilder del ListView corre en
+    // cada frame de scroll y no puede pagar la heurística por párrafo.
+    _cachedFormulas = paragraphs.map(looksLikeFormula).toList(growable: false);
     _cachedWordOffsets = offsets;
     _cachedKeys = List.generate(paragraphs.length, (_) => GlobalKey());
     _cachedChapterWordMax = chapter.words.isNotEmpty
@@ -1330,6 +1434,7 @@ class _ReaderBodyState extends State<_ReaderBody> {
     final paragraphs = _cachedParagraphs;
     final wordOffsets = _cachedWordOffsets;
     final paragraphKeys = _cachedKeys;
+    final formulas = _cachedFormulas;
     final chapterWordMax = _cachedChapterWordMax;
 
     return NotificationListener<UserScrollNotification>(
@@ -1358,6 +1463,19 @@ class _ReaderBodyState extends State<_ReaderBody> {
         behavior: HitTestBehavior.opaque,
         child: Column(
           children: [
+            // Cambio de capítulo. El texto anterior sigue en pantalla, así
+            // que basta una barra fina: sustituirlo por un spinner a
+            // pantalla completa durante medio segundo daría un parpadeo
+            // peor que la propia espera. Antes no se mostraba NADA, porque
+            // la guarda de arriba exige `currentChapter == null` y al
+            // cambiar de capítulo el anterior sigue puesto.
+            BlocBuilder<ReaderBloc, ReaderState>(
+              buildWhen: (prev, curr) => prev.status != curr.status,
+              builder: (context, s) => LoadingBar(
+                visible: s.status == ReaderStatus.loading,
+                color: colors.accent,
+              ),
+            ),
             if (!widget.immersive)
               BlocBuilder<ReaderBloc, ReaderState>(
                 buildWhen: (prev, curr) =>
@@ -1444,6 +1562,8 @@ class _ReaderBodyState extends State<_ReaderBody> {
                                   widget.state.currentChapterIndex + 1,
                               chapterTitle: chapter?.title ?? '',
                               foreground: colors.foreground,
+                              bodyFontSize: prefs.fontSize,
+                              fontFamily: prefs.fontFamilyName,
                             );
                           }
                           final paraIndex = index - 1;
@@ -1455,12 +1575,22 @@ class _ReaderBodyState extends State<_ReaderBody> {
                                 ? paragraphKeys[paraIndex]
                                 : null,
                             followVoice: widget.followVoice,
+                            recenterRequests: widget.recenterRequests,
                             paragraph: paragraphs[paraIndex],
                             startWordIndex: wordOffsets[paraIndex],
                             endWordIndex: endIdx,
                             textStyle: textStyle,
                             accentColor: colors.accent,
                             isFirstParagraph: paraIndex == 0,
+                            isFormula: paraIndex < formulas.length &&
+                                formulas[paraIndex],
+                            bodyTextAlign: prefs.textAlign,
+                            onViewSource: widget.pdfSourcePath == null
+                                ? null
+                                : () => _showFormulaSource(
+                                      context,
+                                      paragraphs[paraIndex],
+                                    ),
                           );
                         },
                       ),
@@ -1558,29 +1688,44 @@ class _EditorialChapterHeader extends StatelessWidget {
     required this.chapterNumber,
     required this.chapterTitle,
     required this.foreground,
+    this.bodyFontSize = 18.0,
+    this.fontFamily,
   });
 
   final int chapterNumber;
   final String chapterTitle;
   final Color foreground;
 
+  /// Tamaño del cuerpo de texto. La jerarquía del encabezado se deriva de
+  /// él en vez de usar tamaños fijos: con la fuente al máximo, un título
+  /// clavado en 20 px acababa siendo **más pequeño** que el propio texto.
+  final double bodyFontSize;
+
+  /// Familia del cuerpo, para que el título no salga en otra tipografía.
+  final String? fontFamily;
+
   @override
   Widget build(BuildContext context) {
+    // El aire alrededor también crece con el texto: márgenes fijos con
+    // fuente grande hacen que el título se pegue al primer párrafo.
+    final gap = bodyFontSize * 0.7;
+
     return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 24, 24, 32),
+      padding: EdgeInsets.fromLTRB(24, bodyFontSize * 1.4, 24, bodyFontSize * 1.8),
       child: Column(
         children: [
           Text(
             '$chapterNumber',
             textAlign: TextAlign.center,
             style: TextStyle(
-              fontSize: 28,
+              fontSize: chapterNumberSize(bodyFontSize),
               fontWeight: FontWeight.w700,
+              fontFamily: fontFamily,
               color: foreground,
               height: 1.2,
             ),
           ),
-          const SizedBox(height: 12),
+          SizedBox(height: gap),
           SizedBox(
             width: 60,
             child: Divider(
@@ -1589,13 +1734,14 @@ class _EditorialChapterHeader extends StatelessWidget {
               color: foreground.withValues(alpha: 0.3),
             ),
           ),
-          const SizedBox(height: 12),
+          SizedBox(height: gap),
           Text(
             chapterTitle,
             textAlign: TextAlign.center,
             style: TextStyle(
-              fontSize: 20,
+              fontSize: chapterTitleSize(bodyFontSize),
               fontWeight: FontWeight.w500,
+              fontFamily: fontFamily,
               color: foreground.withValues(alpha: 0.9),
               height: 1.4,
             ),
@@ -1792,22 +1938,47 @@ class _ReadingTimer extends StatelessWidget {
 class _ParagraphHighlightProxy extends StatefulWidget {
   const _ParagraphHighlightProxy({
     required this.followVoice,
+    required this.recenterRequests,
     required this.paragraph,
     required this.startWordIndex,
     required this.endWordIndex,
     required this.textStyle,
     this.accentColor,
     this.isFirstParagraph = false,
+    this.isFormula = false,
+    this.onViewSource,
+    this.bodyTextAlign = TextAlign.justify,
     super.key,
   });
 
   final ValueListenable<bool> followVoice;
+
+  /// Peticiones explícitas de re-centrado del botón "Volver a la lectura".
+  final ValueListenable<int> recenterRequests;
   final String paragraph;
   final int startWordIndex;
   final int endWordIndex;
   final TextStyle textStyle;
   final Color? accentColor;
   final bool isFirstParagraph;
+
+  /// El párrafo es una fórmula aplanada por el extractor de PDF.
+  ///
+  /// Solo cambia cómo se presenta: justificar y sangrar una tira de símbolos
+  /// la vuelve ilegible. El resaltado y el auto-scroll siguen funcionando
+  /// igual, así que no hay riesgo de regresión en el seguidor de voz.
+  final bool isFormula;
+
+  /// Abre la página original del PDF donde está esta fórmula. Solo se pasa
+  /// cuando [isFormula] y el libro procede de un PDF.
+  final VoidCallback? onViewSource;
+
+  /// Alineación elegida por el lector en sus preferencias.
+  ///
+  /// Antes estaba clavada a `justify` aquí dentro, así que el interruptor
+  /// "Justificar texto" del panel de ajustes se guardaba, se persistía y no
+  /// producía ningún efecto visible.
+  final TextAlign bodyTextAlign;
 
   @override
   State<_ParagraphHighlightProxy> createState() =>
@@ -1821,19 +1992,83 @@ class _ParagraphHighlightProxyState extends State<_ParagraphHighlightProxy> {
   late List<_Sentence> _sentences;
   late List<GlobalKey> _sentenceKeys;
 
+  /// Segunda pasada del re-centrado. Se guarda para poder cancelarla en
+  /// [dispose] y no retener el State 320 ms de más.
+  Timer? _recenterTimer;
+
   @override
   void initState() {
     super.initState();
     _sentences = _splitSentences();
+    widget.recenterRequests.addListener(_onRecenterRequested);
+  }
+
+  @override
+  void dispose() {
+    widget.recenterRequests.removeListener(_onRecenterRequested);
+    // El temporizador captura `this`: sin cancelarlo, cada párrafo desmontado
+    // sobrevivía 320 ms con sus oraciones y sus GlobalKey. En un fling eso son
+    // varias decenas de States muertos vivos a la vez.
+    _recenterTimer?.cancel();
+    super.dispose();
   }
 
   @override
   void didUpdateWidget(covariant _ParagraphHighlightProxy old) {
     super.didUpdateWidget(old);
+    if (old.recenterRequests != widget.recenterRequests) {
+      old.recenterRequests.removeListener(_onRecenterRequested);
+      widget.recenterRequests.addListener(_onRecenterRequested);
+    }
     if (old.paragraph != widget.paragraph ||
         old.startWordIndex != widget.startWordIndex) {
       _sentences = _splitSentences();
     }
+  }
+
+  void _onRecenterRequested() => _recenterActiveSentence();
+
+  /// Centra la ORACIÓN que contiene la palabra en curso, solo si pertenece a
+  /// este párrafo. Lo dispara el botón "Volver a la lectura" para atinar a la
+  /// línea que se está leyendo, no solo al inicio del párrafo.
+  void _recenterActiveSentence() {
+    if (!widget.followVoice.value) return;
+
+    // Descarte barato ANTES de programar nada: son dos comparaciones y dejan
+    // fuera a todos los párrafos menos uno. Hacerlo dentro de los callbacks
+    // significaba programar un post-frame y un temporizador de 320 ms por
+    // cada párrafo montado para tirarlos justo después.
+    final active = _activeSentenceIndex(
+      context.read<ReaderBloc>().state.currentWordIndex,
+    );
+    if (active < 0 || active >= _sentenceKeys.length) return;
+
+    void doScroll() {
+      if (!mounted || !widget.followVoice.value) return;
+      final idx = _activeSentenceIndex(
+        context.read<ReaderBloc>().state.currentWordIndex,
+      );
+      if (idx < 0 || idx >= _sentenceKeys.length) return;
+      final keyCtx = _sentenceKeys[idx].currentContext;
+      if (keyCtx == null) return;
+      Scrollable.ensureVisible(
+        keyCtx,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOutCubic,
+        alignment: 0.3,
+      );
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      doScroll();
+      // Segunda pasada tras la primera animación: si el layout aún se estaba
+      // asentando (p. ej. tras un salto grande), el primer ensureVisible
+      // queda impreciso. Repetir con el layout ya estable evita tener que
+      // pulsar el botón dos veces. Si el primero ya acertó, este no mueve nada.
+      _recenterTimer?.cancel();
+      _recenterTimer = Timer(const Duration(milliseconds: 320), doScroll);
+    });
   }
 
   List<_Sentence> _splitSentences() {
@@ -1869,12 +2104,41 @@ class _ParagraphHighlightProxyState extends State<_ParagraphHighlightProxy> {
 
   @override
   Widget build(BuildContext context) {
-    const indentWidth = 24.0;
+    final indentWidth = paragraphIndent(
+      fontSize: widget.textStyle.fontSize ?? 18.0,
+      isFirstParagraph: widget.isFirstParagraph,
+      isFormula: widget.isFormula,
+    );
+    // Una fórmula no se justifica: separar los símbolos para cuadrar el
+    // margen es justo lo que la vuelve ilegible.
+    final textAlign =
+        widget.isFormula ? TextAlign.center : widget.bodyTextAlign;
+    final textStyle = widget.isFormula
+        ? widget.textStyle.copyWith(
+            // Sin assets propios: caemos en la monoespaciada del sistema, que
+            // alinea exponentes y paréntesis mucho mejor que la de lectura.
+            //
+            // Tiene que ir explícita: `copyWith` resuelve cada campo como
+            // `valor ?? this.valor`, así que pasar `null` CONSERVABA la
+            // familia de lectura y el bloque nunca cambiaba de tipografía.
+            // Y `fontFamilyFallback` por sí solo tampoco basta: solo entra
+            // para glifos que falten en la familia principal, y los dígitos
+            // y paréntesis están en todas.
+            fontFamily: 'monospace',
+            fontFamilyFallback: const [
+              'Menlo',
+              'Consolas',
+              'Courier New',
+            ],
+            height: 1.5,
+          )
+        : widget.textStyle;
+
     final padding = EdgeInsets.only(
       left: 12,
       right: 12,
-      top: widget.isFirstParagraph ? 0 : 4,
-      bottom: 4,
+      top: widget.isFirstParagraph ? 0 : (widget.isFormula ? 12 : 4),
+      bottom: widget.isFormula ? 12 : 4,
     );
 
     if (_sentences.isEmpty) {
@@ -1882,8 +2146,8 @@ class _ParagraphHighlightProxyState extends State<_ParagraphHighlightProxy> {
         padding: padding,
         child: Text(
           widget.paragraph,
-          textAlign: TextAlign.justify,
-          style: widget.textStyle,
+          textAlign: textAlign,
+          style: textStyle,
         ),
       );
     }
@@ -1930,49 +2194,112 @@ class _ParagraphHighlightProxyState extends State<_ParagraphHighlightProxy> {
                       Theme.of(context).colorScheme.primaryContainer)
                   .withValues(alpha: 0.12);
 
+          final body = Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              for (var i = 0; i < _sentences.length; i++)
+                AnimatedContainer(
+                  key: _sentenceKeys[i],
+                  duration: const Duration(milliseconds: 200),
+                  curve: Curves.easeInOut,
+                  padding: const EdgeInsets.symmetric(
+                    vertical: 2,
+                    horizontal: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: i == activeIdx ? highlight : Colors.transparent,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: i == 0 && indentWidth > 0
+                      ? Row(
+                          crossAxisAlignment: CrossAxisAlignment.baseline,
+                          textBaseline: TextBaseline.alphabetic,
+                          children: [
+                            SizedBox(width: indentWidth),
+                            Expanded(
+                              child: Text(
+                                _sentences[i].text,
+                                textAlign: textAlign,
+                                style: textStyle,
+                              ),
+                            ),
+                          ],
+                        )
+                      : Text(
+                          _sentences[i].text,
+                          textAlign: textAlign,
+                          style: textStyle,
+                        ),
+                ),
+            ],
+          );
+
           return Padding(
             padding: padding,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                for (var i = 0; i < _sentences.length; i++)
-                  AnimatedContainer(
-                    key: _sentenceKeys[i],
-                    duration: const Duration(milliseconds: 200),
-                    curve: Curves.easeInOut,
-                    padding: const EdgeInsets.symmetric(
-                      vertical: 2,
-                      horizontal: 6,
-                    ),
-                    decoration: BoxDecoration(
-                      color: i == activeIdx ? highlight : Colors.transparent,
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: i == 0
-                        ? Row(
-                            crossAxisAlignment: CrossAxisAlignment.baseline,
-                            textBaseline: TextBaseline.alphabetic,
-                            children: [
-                              SizedBox(width: indentWidth),
-                              Expanded(
-                                child: Text(
-                                  _sentences[i].text,
-                                  textAlign: TextAlign.justify,
-                                  style: widget.textStyle,
-                                ),
-                              ),
-                            ],
-                          )
-                        : Text(
-                            _sentences[i].text,
-                            textAlign: TextAlign.justify,
-                            style: widget.textStyle,
-                          ),
-                  ),
-              ],
-            ),
+            child: widget.isFormula
+                ? _FormulaFrame(
+                    accentColor: widget.accentColor,
+                    onViewSource: widget.onViewSource,
+                    child: body,
+                  )
+                : body,
           );
         },
+      ),
+    );
+  }
+}
+
+/// Marco visual de un bloque de fórmula.
+///
+/// Separa la ecuación de la prosa que la rodea con un filete lateral y un
+/// fondo apenas teñido: el objetivo es que el ojo la localice de un vistazo
+/// sin que compita con el texto en contraste.
+class _FormulaFrame extends StatelessWidget {
+  const _FormulaFrame({required this.child, this.accentColor, this.onViewSource});
+
+  final Widget child;
+  final Color? accentColor;
+
+  /// Abre la página original del PDF. Es `null` cuando el libro no viene de
+  /// un PDF y por tanto no hay página que enseñar.
+  final VoidCallback? onViewSource;
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = accentColor ?? Theme.of(context).colorScheme.primary;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(8),
+        border: Border(
+          left: BorderSide(color: accent.withValues(alpha: 0.45), width: 3),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          child,
+          if (onViewSource != null)
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: onViewSource,
+                icon: const Icon(Icons.image_search_rounded, size: 18),
+                label: const Text('Ver en el libro'),
+                style: TextButton.styleFrom(
+                  foregroundColor: accent,
+                  visualDensity: VisualDensity.compact,
+                  textStyle: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -2227,7 +2554,7 @@ class _VoiceMenuSheetState extends State<_VoiceMenuSheet> {
                 if (_loading)
                   const Padding(
                     padding: EdgeInsets.symmetric(vertical: 16),
-                    child: Center(child: CircularProgressIndicator()),
+                    child: LoadingView(message: 'Buscando voces instaladas'),
                   )
                 else if (!_caps.supportsVoiceSelection)
                   const Padding(
