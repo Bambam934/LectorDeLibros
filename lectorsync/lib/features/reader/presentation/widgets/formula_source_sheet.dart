@@ -12,14 +12,16 @@ import '../../data/parsing/pdf_page_locator.dart';
 /// La única forma de que el lector vea la fórmula de verdad es enseñarle la
 /// página tal y como está maquetada en el libro.
 ///
-/// La página se localiza al abrir la hoja, buscando el texto de la fórmula
-/// en el PDF. Es un instante en un libro ya indexado y evita tener que
-/// arrastrar el número de página por todo el pipeline de parseo.
+/// En los capítulos sin maquetación la página se localiza al abrir la hoja,
+/// buscando el texto de la fórmula en el PDF. Las figuras de los capítulos con
+/// bloques (ADR 13) ya traen su página en [pageIndex] y no se busca nada.
 class FormulaSourceSheet extends StatefulWidget {
   const FormulaSourceSheet({
     required this.pdfPath,
     required this.fragment,
     required this.locator,
+    this.pageIndex,
+    this.title = 'Fórmula en el libro',
     super.key,
   });
 
@@ -31,12 +33,19 @@ class FormulaSourceSheet extends StatefulWidget {
 
   final PdfPageLocator locator;
 
+  /// Página base 0, si ya se conoce.
+  final int? pageIndex;
+
+  final String title;
+
   /// Abre la hoja a pantalla casi completa.
   static Future<void> show(
     BuildContext context, {
     required String pdfPath,
     required String fragment,
     required PdfPageLocator locator,
+    int? pageIndex,
+    String title = 'Fórmula en el libro',
   }) {
     return showModalBottomSheet<void>(
       context: context,
@@ -46,6 +55,8 @@ class FormulaSourceSheet extends StatefulWidget {
         pdfPath: pdfPath,
         fragment: fragment,
         locator: locator,
+        pageIndex: pageIndex,
+        title: title,
       ),
     );
   }
@@ -60,10 +71,13 @@ class _FormulaSourceSheetState extends State<FormulaSourceSheet> {
   @override
   void initState() {
     super.initState();
-    _pageIndex = widget.locator.locate(
-      pdfPath: widget.pdfPath,
-      fragment: widget.fragment,
-    );
+    final known = widget.pageIndex;
+    _pageIndex = known != null
+        ? Future<int?>.value(known)
+        : widget.locator.locate(
+            pdfPath: widget.pdfPath,
+            fragment: widget.fragment,
+          );
   }
 
   @override
@@ -92,6 +106,7 @@ class _FormulaSourceSheetState extends State<FormulaSourceSheet> {
             FutureBuilder<int?>(
               future: _pageIndex,
               builder: (context, snapshot) => _Header(
+                title: widget.title,
                 pageNumber: snapshot.data != null ? snapshot.data! + 1 : null,
                 onClose: () => Navigator.of(context).maybePop(),
               ),
@@ -130,8 +145,13 @@ class _FormulaSourceSheetState extends State<FormulaSourceSheet> {
 }
 
 class _Header extends StatelessWidget {
-  const _Header({required this.onClose, this.pageNumber});
+  const _Header({
+    required this.title,
+    required this.onClose,
+    this.pageNumber,
+  });
 
+  final String title;
   final int? pageNumber;
   final VoidCallback onClose;
 
@@ -148,9 +168,12 @@ class _Header extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  'Fórmula en el libro',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                  ),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),

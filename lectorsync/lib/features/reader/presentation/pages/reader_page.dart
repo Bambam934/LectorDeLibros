@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -33,6 +34,7 @@ import '../../data/repositories/bookmark_repository.dart';
 import '../../data/repositories/chapter_cache_repository.dart';
 import '../../data/repositories/reading_stats_repository.dart';
 import '../../domain/entities/bookmark.dart';
+import '../../domain/entities/chapter_block.dart';
 import '../../domain/repositories/reader_repository.dart';
 import '../bloc/reader_bloc.dart';
 import '../background/reading_audio_handler.dart';
@@ -44,6 +46,7 @@ import '../bloc/reader_state.dart';
 import '../widgets/ambient_sound_sheet.dart';
 import '../widgets/book_search_delegate.dart';
 import '../widgets/bookmarks_sheet.dart';
+import '../widgets/pdf_crop_image.dart';
 import '../widgets/reading_stats_sheet.dart';
 
 class ReaderPage extends StatelessWidget {
@@ -736,26 +739,41 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
     super.dispose();
   }
 
+  /// Lleva a la voz el ajuste "Leer los bloques de código en voz alta" y, si
+  /// está sonando, la reinicia en la palabra actual para que el cambio se
+  /// note al momento (ADR 13).
+  void _applyReadCodeAloud(bool read) {
+    if (!sl.isRegistered<DeviceTtsRepository>()) return;
+    final tts = sl<DeviceTtsRepository>();
+    if (tts.readCodeAloud == read) return;
+    tts.readCodeAloud = read;
+    if (_bloc.state.isTtsActive) _bloc.add(const ReaderTtsRestart());
+  }
+
   @override
   Widget build(BuildContext context) {
     return BlocProvider.value(
       value: _preferencesCubit,
-      child: BlocBuilder<PreferencesCubit, ReadingPreferences>(
-        builder: (context, prefs) {
-          final colors = ReadingPaletteColors.resolve(
-            prefs.palette,
-            Theme.of(context).colorScheme,
-          );
-          return PopScope(
-            canPop: !_focus.isFullscreen,
-            onPopInvokedWithResult: (didPop, _) {
-              // Atrás saca primero de la pantalla completa en vez de cerrar
-              // el libro (ADR 12).
-              if (!didPop) unawaited(_toggleFullscreen());
-            },
-            child: _buildScaffold(context, prefs, colors),
-          );
-        },
+      child: BlocListener<PreferencesCubit, ReadingPreferences>(
+        listenWhen: (prev, curr) => prev.readCodeAloud != curr.readCodeAloud,
+        listener: (context, prefs) => _applyReadCodeAloud(prefs.readCodeAloud),
+        child: BlocBuilder<PreferencesCubit, ReadingPreferences>(
+          builder: (context, prefs) {
+            final colors = ReadingPaletteColors.resolve(
+              prefs.palette,
+              Theme.of(context).colorScheme,
+            );
+            return PopScope(
+              canPop: !_focus.isFullscreen,
+              onPopInvokedWithResult: (didPop, _) {
+                // Atrás saca primero de la pantalla completa en vez de
+                // cerrar el libro (ADR 12).
+                if (!didPop) unawaited(_toggleFullscreen());
+              },
+              child: _buildScaffold(context, prefs, colors),
+            );
+          },
+        ),
       ),
     );
   }
@@ -1568,6 +1586,10 @@ class _ReaderBody extends StatefulWidget {
 class _ReaderBodyState extends State<_ReaderBody> {
   String? _cachedChapterId;
   List<String> _cachedParagraphs = const [];
+
+  /// Bloques del capítulo (ADR 13): uno por elemento de la lista, en lugar de
+  /// un párrafo por elemento. Vacío en los capítulos sin maquetación.
+  List<ChapterBlock> _cachedBlocks = const [];
   List<int> _cachedWordOffsets = const [];
   List<GlobalKey> _cachedKeys = const [];
   List<bool> _cachedFormulas = const [];
@@ -1588,9 +1610,27 @@ class _ReaderBodyState extends State<_ReaderBody> {
     );
   }
 
+  /// "Ver en el libro" de una figura: su página ya se conoce, no hay que
+  /// buscarla por el texto.
+  void _showFigureSource(BuildContext context, ChapterBlock block) {
+    final path = widget.pdfSourcePath;
+    if (path == null || block.page == null) return;
+    FormulaSourceSheet.show(
+      context,
+      pdfPath: path,
+      fragment: block.text,
+      locator: _pageLocator,
+      pageIndex: block.page,
+      title: block.figureKind == FigureKind.formula
+          ? 'Fórmula en el libro'
+          : 'Figura en el libro',
+    );
+  }
+
   @override
   void dispose() {
     _pageLocator.clear();
+    unawaited(PdfCropCache.instance.clear());
     super.dispose();
   }
 
@@ -1599,20 +1639,38 @@ class _ReaderBodyState extends State<_ReaderBody> {
     if (chapter == null) return;
     if (chapter.id == _cachedChapterId) return;
 
-    final paragraphs = chapter.paragraphs.isEmpty
-        ? <String>[chapter.text ?? '']
-        : chapter.paragraphs;
+    final blocks = chapter.blocks;
+    final List<String> paragraphs;
     final offsets = <int>[];
-    int cursor = 0;
-    for (final para in paragraphs) {
-      offsets.add(cursor);
-      cursor += para.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).length;
+    if (blocks.isNotEmpty) {
+      // Con maquetación, un elemento por bloque: partir el texto por líneas
+      // en blanco rompería el código, que las lleva dentro.
+      paragraphs = [for (final b in blocks) b.text];
+      var cursor = 0;
+      for (final block in blocks) {
+        offsets.add(cursor);
+        cursor += block.wordCount;
+      }
+      // La heurística de fórmulas solo es para los capítulos sin bloques:
+      // aquí enmarcaba hasta los teléfonos de la página de créditos.
+      _cachedFormulas = const [];
+    } else {
+      paragraphs = chapter.paragraphs.isEmpty
+          ? <String>[chapter.text ?? '']
+          : chapter.paragraphs;
+      var cursor = 0;
+      for (final para in paragraphs) {
+        offsets.add(cursor);
+        cursor += para.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).length;
+      }
+      // Se calcula una vez por capítulo: el itemBuilder del ListView corre
+      // en cada frame de scroll y no puede pagar la heurística por párrafo.
+      _cachedFormulas =
+          paragraphs.map(looksLikeFormula).toList(growable: false);
     }
     _cachedChapterId = chapter.id;
     _cachedParagraphs = paragraphs;
-    // Se calcula una vez por capítulo: el itemBuilder del ListView corre en
-    // cada frame de scroll y no puede pagar la heurística por párrafo.
-    _cachedFormulas = paragraphs.map(looksLikeFormula).toList(growable: false);
+    _cachedBlocks = blocks;
     _cachedWordOffsets = offsets;
     _cachedKeys = List.generate(paragraphs.length, (_) => GlobalKey());
     _cachedChapterWordMax = chapter.words.isNotEmpty
@@ -1653,6 +1711,7 @@ class _ReaderBodyState extends State<_ReaderBody> {
     }
 
     final paragraphs = _cachedParagraphs;
+    final blocks = _cachedBlocks;
     final wordOffsets = _cachedWordOffsets;
     final paragraphKeys = _cachedKeys;
     final formulas = _cachedFormulas;
@@ -1791,10 +1850,43 @@ class _ReaderBodyState extends State<_ReaderBody> {
                           final endIdx = (paraIndex + 1 < wordOffsets.length)
                               ? wordOffsets[paraIndex + 1] - 1
                               : chapterWordMax - 1;
+                          final itemKey = paraIndex < paragraphKeys.length
+                              ? paragraphKeys[paraIndex]
+                              : null;
+                          final block = paraIndex < blocks.length
+                              ? blocks[paraIndex]
+                              : null;
+                          if (block != null &&
+                              (block.kind == ChapterBlockKind.code ||
+                                  block.kind == ChapterBlockKind.figure)) {
+                            return _WholeBlockHighlight(
+                              key: itemKey,
+                              followVoice: widget.followVoice,
+                              recenterRequests: widget.recenterRequests,
+                              startWordIndex: wordOffsets[paraIndex],
+                              endWordIndex: endIdx,
+                              builder: (context, active) =>
+                                  block.kind == ChapterBlockKind.code
+                                      ? _CodeBlockView(
+                                          code: block.text,
+                                          textStyle: textStyle,
+                                          accentColor: colors.accent,
+                                          active: active,
+                                        )
+                                      : _FigureBlockView(
+                                          block: block,
+                                          pdfPath: widget.pdfSourcePath,
+                                          bodyFontSize: prefs.fontSize,
+                                          inkColor: colors.foreground,
+                                          accentColor: colors.accent,
+                                          active: active,
+                                          onViewSource: () =>
+                                              _showFigureSource(context, block),
+                                        ),
+                            );
+                          }
                           return _ParagraphHighlightProxy(
-                            key: paraIndex < paragraphKeys.length
-                                ? paragraphKeys[paraIndex]
-                                : null,
+                            key: itemKey,
                             followVoice: widget.followVoice,
                             recenterRequests: widget.recenterRequests,
                             paragraph: paragraphs[paraIndex],
@@ -1803,6 +1895,7 @@ class _ReaderBodyState extends State<_ReaderBody> {
                             textStyle: textStyle,
                             accentColor: colors.accent,
                             isFirstParagraph: paraIndex == 0,
+                            isHeading: block?.kind == ChapterBlockKind.heading,
                             isFormula: paraIndex < formulas.length &&
                                 formulas[paraIndex],
                             bodyTextAlign: prefs.textAlign,
@@ -2166,6 +2259,7 @@ class _ParagraphHighlightProxy extends StatefulWidget {
     required this.textStyle,
     this.accentColor,
     this.isFirstParagraph = false,
+    this.isHeading = false,
     this.isFormula = false,
     this.onViewSource,
     this.bodyTextAlign = TextAlign.justify,
@@ -2182,6 +2276,11 @@ class _ParagraphHighlightProxy extends StatefulWidget {
   final TextStyle textStyle;
   final Color? accentColor;
   final bool isFirstParagraph;
+
+  /// Título de sección o rótulo de ejercicio (ADR 13): algo más grande, en
+  /// seminegrita, sin sangría y con aire encima. Se resalta igual que un
+  /// párrafo cuando la voz lo lee.
+  final bool isHeading;
 
   /// El párrafo es una fórmula aplanada por el extractor de PDF.
   ///
@@ -2325,16 +2424,27 @@ class _ParagraphHighlightProxyState extends State<_ParagraphHighlightProxy> {
 
   @override
   Widget build(BuildContext context) {
-    final indentWidth = paragraphIndent(
-      fontSize: widget.textStyle.fontSize ?? 18.0,
-      isFirstParagraph: widget.isFirstParagraph,
-      isFormula: widget.isFormula,
-    );
+    final indentWidth = widget.isHeading
+        ? 0.0
+        : paragraphIndent(
+            fontSize: widget.textStyle.fontSize ?? 18.0,
+            isFirstParagraph: widget.isFirstParagraph,
+            isFormula: widget.isFormula,
+          );
     // Una fórmula no se justifica: separar los símbolos para cuadrar el
-    // margen es justo lo que la vuelve ilegible.
-    final textAlign =
-        widget.isFormula ? TextAlign.center : widget.bodyTextAlign;
-    final textStyle = widget.isFormula
+    // margen es justo lo que la vuelve ilegible. Un título tampoco.
+    final textAlign = widget.isFormula
+        ? TextAlign.center
+        : widget.isHeading
+            ? TextAlign.start
+            : widget.bodyTextAlign;
+    final textStyle = widget.isHeading
+        ? widget.textStyle.copyWith(
+            fontSize: (widget.textStyle.fontSize ?? 18.0) * 1.15,
+            fontWeight: FontWeight.w600,
+            height: 1.3,
+          )
+        : widget.isFormula
         ? widget.textStyle.copyWith(
             // Sin assets propios: caemos en la monoespaciada del sistema, que
             // alinea exponentes y paréntesis mucho mejor que la de lectura.
@@ -2358,8 +2468,12 @@ class _ParagraphHighlightProxyState extends State<_ParagraphHighlightProxy> {
     final padding = EdgeInsets.only(
       left: 12,
       right: 12,
-      top: widget.isFirstParagraph ? 0 : (widget.isFormula ? 12 : 4),
-      bottom: widget.isFormula ? 12 : 4,
+      top: widget.isFirstParagraph
+          ? 0
+          : widget.isHeading
+              ? 20
+              : (widget.isFormula ? 12 : 4),
+      bottom: widget.isFormula ? 12 : (widget.isHeading ? 8 : 4),
     );
 
     if (_sentences.isEmpty) {
@@ -2524,6 +2638,259 @@ class _FormulaFrame extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Resalta un bloque entero mientras la voz pasa por él y lo mantiene a la
+/// vista, como hace [_ParagraphHighlightProxy] con cada oración (ADR 13).
+///
+/// Es para el código y las figuras: no se parten en oraciones, y resaltar
+/// palabra a palabra un listado o un recorte no tendría sentido.
+class _WholeBlockHighlight extends StatefulWidget {
+  const _WholeBlockHighlight({
+    required this.followVoice,
+    required this.recenterRequests,
+    required this.startWordIndex,
+    required this.endWordIndex,
+    required this.builder,
+    super.key,
+  });
+
+  final ValueListenable<bool> followVoice;
+
+  /// Peticiones explícitas de re-centrado del botón "Volver a la lectura".
+  final ValueListenable<int> recenterRequests;
+  final int startWordIndex;
+  final int endWordIndex;
+  final Widget Function(BuildContext context, bool active) builder;
+
+  @override
+  State<_WholeBlockHighlight> createState() => _WholeBlockHighlightState();
+}
+
+class _WholeBlockHighlightState extends State<_WholeBlockHighlight> {
+  /// Segunda pasada del re-centrado, cancelable en [dispose] como en
+  /// [_ParagraphHighlightProxyState].
+  Timer? _recenterTimer;
+
+  bool _isActive(ReaderState s) =>
+      s.isTtsActive &&
+      s.currentWordIndex >= widget.startWordIndex &&
+      s.currentWordIndex <= widget.endWordIndex;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.recenterRequests.addListener(_onRecenterRequested);
+  }
+
+  @override
+  void didUpdateWidget(covariant _WholeBlockHighlight old) {
+    super.didUpdateWidget(old);
+    if (old.recenterRequests != widget.recenterRequests) {
+      old.recenterRequests.removeListener(_onRecenterRequested);
+      widget.recenterRequests.addListener(_onRecenterRequested);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.recenterRequests.removeListener(_onRecenterRequested);
+    _recenterTimer?.cancel();
+    super.dispose();
+  }
+
+  void _onRecenterRequested() {
+    if (!widget.followVoice.value) return;
+    if (!_isActive(context.read<ReaderBloc>().state)) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _ensureVisible();
+      _recenterTimer?.cancel();
+      _recenterTimer =
+          Timer(const Duration(milliseconds: 320), _ensureVisible);
+    });
+  }
+
+  void _ensureVisible() {
+    if (!mounted || !widget.followVoice.value) return;
+    Scrollable.ensureVisible(
+      context,
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeOutCubic,
+      alignment: 0.3,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RepaintBoundary(
+      child: BlocConsumer<ReaderBloc, ReaderState>(
+        listenWhen: (prev, curr) => _isActive(curr) && !_isActive(prev),
+        listener: (context, state) {
+          if (!widget.followVoice.value) return;
+          WidgetsBinding.instance
+              .addPostFrameCallback((_) => _ensureVisible());
+        },
+        buildWhen: (prev, curr) => _isActive(prev) != _isActive(curr),
+        builder: (context, state) => widget.builder(context, _isActive(state)),
+      ),
+    );
+  }
+}
+
+/// Bloque de código: monoespaciada, un poco más pequeña que el cuerpo, en un
+/// panel con filete lateral (ADR 13).
+///
+/// Las líneas largas **no se parten**: el bloque se desplaza en horizontal.
+/// Partirlas rompería la sangría, que en Python es sintaxis.
+class _CodeBlockView extends StatelessWidget {
+  const _CodeBlockView({
+    required this.code,
+    required this.textStyle,
+    required this.active,
+    this.accentColor,
+  });
+
+  final String code;
+  final TextStyle textStyle;
+  final bool active;
+  final Color? accentColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = accentColor ?? Theme.of(context).colorScheme.primary;
+    final style = textStyle.copyWith(
+      // Explícita: `copyWith` con `null` conservaría la familia de lectura
+      // (la misma trampa que en las fórmulas, ver ADR §7).
+      fontFamily: 'monospace',
+      fontFamilyFallback: const ['Menlo', 'Consolas', 'Courier New'],
+      fontSize: (textStyle.fontSize ?? 18.0) * 0.82,
+      height: 1.45,
+      letterSpacing: 0,
+    );
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeInOut,
+        decoration: BoxDecoration(
+          color: accent.withValues(alpha: active ? 0.12 : 0.05),
+          borderRadius: BorderRadius.circular(8),
+          border: Border(
+            left: BorderSide(color: accent.withValues(alpha: 0.45), width: 3),
+          ),
+        ),
+        child: LayoutBuilder(
+          builder: (context, constraints) => SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                minWidth: math.max(0.0, constraints.maxWidth - 24),
+              ),
+              child: Text(code, style: style, softWrap: false),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Ecuación o figura recortada del PDF original (ADR 13).
+///
+/// Se pinta a la escala de la letra: la altura de la letra del libro pasa a
+/// ser la que eligió el lector, así que una ecuación sale del tamaño del
+/// texto que la rodea en vez de estirada al ancho de la columna. Si no cabe,
+/// se reduce hasta el ancho de la columna.
+///
+/// Las fórmulas toman el color del texto sobre fondo transparente, para que
+/// se lean igual en todos los temas; las figuras grandes se enseñan tal cual,
+/// con las esquinas redondeadas. Al tocarlo se abre la página en el libro.
+class _FigureBlockView extends StatelessWidget {
+  const _FigureBlockView({
+    required this.block,
+    required this.pdfPath,
+    required this.bodyFontSize,
+    required this.inkColor,
+    required this.active,
+    required this.onViewSource,
+    this.accentColor,
+  });
+
+  final ChapterBlock block;
+  final String? pdfPath;
+  final double bodyFontSize;
+  final Color inkColor;
+  final bool active;
+  final VoidCallback onViewSource;
+  final Color? accentColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final rect = block.rect!;
+    final isFormula = block.figureKind == FigureKind.formula;
+    final accent = accentColor ?? Theme.of(context).colorScheme.primary;
+    final pointsToPixels = bodyFontSize / (block.textHeight ?? 11);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final available = math.max(1.0, constraints.maxWidth - 16);
+          final width = math.min(rect.width * pointsToPixels, available);
+          final height = width * rect.height / rect.width;
+          final path = pdfPath;
+          Widget image = path == null
+              ? SizedBox(width: width, height: height)
+              : PdfCropImage(
+                  pdfPath: path,
+                  pageIndex: block.page!,
+                  rect: rect,
+                  width: width,
+                  height: height,
+                );
+          image = isFormula
+              ? ColorFiltered(colorFilter: _inkFilter(inkColor), child: image)
+              : ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: image,
+                );
+          return Semantics(
+            button: true,
+            label: isFormula ? 'Fórmula' : 'Figura',
+            hint: 'Ver en el libro',
+            child: GestureDetector(
+              onTap: onViewSource,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                curve: Curves.easeInOut,
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: active
+                      ? accent.withValues(alpha: 0.12)
+                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Center(child: image),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  /// Pinta la tinta con [ink] y deja el papel transparente: la opacidad sale
+  /// de lo oscuro que es cada píxel. En vez de invertir la imagen en los temas
+  /// oscuros, la fórmula queda del color del texto en cualquier paleta, sepia
+  /// incluida, donde invertir pondría un recuadro negro sobre fondo claro.
+  static ColorFilter _inkFilter(Color ink) => ColorFilter.matrix(<double>[
+        0, 0, 0, 0, ink.r * 255, //
+        0, 0, 0, 0, ink.g * 255,
+        0, 0, 0, 0, ink.b * 255,
+        -0.299, -0.587, -0.114, 0, 255,
+      ]);
 }
 
 class _Sentence {
