@@ -26,6 +26,7 @@ class ReadingPreferences extends Equatable {
     this.maxColumnWidth = 600.0,
     this.palette = ReadingPalette.followApp,
     this.justifyText = false,
+    this.readCodeAloud = false,
   });
 
   final ReadingFontFamily fontFamily;
@@ -41,6 +42,10 @@ class ReadingPreferences extends Equatable {
   final ReadingPalette palette;
   final bool justifyText;
 
+  /// Leer el código en voz alta. Por defecto la voz dice "Bloque de código."
+  /// y sigue: leer símbolo a símbolo un listado no se entiende de oído.
+  final bool readCodeAloud;
+
   ReadingPreferences copyWith({
     ReadingFontFamily? fontFamily,
     double? fontSize,
@@ -49,6 +54,7 @@ class ReadingPreferences extends Equatable {
     double? maxColumnWidth,
     ReadingPalette? palette,
     bool? justifyText,
+    bool? readCodeAloud,
   }) {
     return ReadingPreferences(
       fontFamily: fontFamily ?? this.fontFamily,
@@ -58,6 +64,7 @@ class ReadingPreferences extends Equatable {
       maxColumnWidth: maxColumnWidth ?? this.maxColumnWidth,
       palette: palette ?? this.palette,
       justifyText: justifyText ?? this.justifyText,
+      readCodeAloud: readCodeAloud ?? this.readCodeAloud,
     );
   }
 
@@ -92,6 +99,7 @@ class ReadingPreferences extends Equatable {
     maxColumnWidth,
     palette,
     justifyText,
+    readCodeAloud,
   ];
 }
 

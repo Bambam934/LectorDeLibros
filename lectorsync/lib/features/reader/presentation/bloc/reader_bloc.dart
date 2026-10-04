@@ -421,6 +421,7 @@ class ReaderBloc extends Bloc<ReaderEvent, ReaderState> {
         text: text,
         words: words,
         startWordIndex: state.currentWordIndex,
+        blocks: chapter.blocks,
       );
     }
   }
@@ -448,6 +449,7 @@ class ReaderBloc extends Bloc<ReaderEvent, ReaderState> {
       text: chapter.text ?? '',
       words: words,
       startWordIndex: state.currentWordIndex,
+      blocks: chapter.blocks,
     );
   }
 

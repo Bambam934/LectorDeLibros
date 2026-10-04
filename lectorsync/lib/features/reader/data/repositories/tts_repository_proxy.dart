@@ -5,6 +5,7 @@ import 'package:fpdart/fpdart.dart';
 
 import '../../../../core/di/injection_container.dart' show TtsMode;
 import '../../../../core/errors/failures.dart';
+import '../../domain/entities/chapter_block.dart';
 import '../../domain/repositories/tts_repository.dart';
 import 'audio_tts_repository.dart';
 import 'device_tts_repository.dart';
@@ -260,8 +261,14 @@ class TtsRepositoryProxy implements TtsRepository {
     required String text,
     required List<String> words,
     int startWordIndex = 0,
+    List<ChapterBlock> blocks = const [],
   }) =>
-      _activeRepo.speak(text: text, words: words, startWordIndex: startWordIndex);
+      _activeRepo.speak(
+        text: text,
+        words: words,
+        startWordIndex: startWordIndex,
+        blocks: blocks,
+      );
 
   @override
   Future<Either<Failure, Unit>> stop() => _activeRepo.stop();

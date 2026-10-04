@@ -20,10 +20,12 @@ class SpeakSegment {
   final int audibleCharCount;
   final bool hasNumbers;
 
-  /// [text] es un aviso sintético ("Fórmula.") y NO se deriva de [words].
+  /// [text] es un aviso sintético ("Fórmula.", "Figura.", "Bloque de
+  /// código.") y NO se deriva de [words].
   ///
   /// Quien necesite rehacer el texto del segmento —la recuperación tras un
   /// utterance interrumpido— debe respetar esta marca: reconstruirlo desde
-  /// [words] devolvería la ecuación aplanada que el aviso vino a sustituir.
+  /// [words] devolvería la ecuación aplanada o el código que el aviso vino a
+  /// sustituir. El nombre viene del primer aviso, el de las fórmulas.
   final bool isFormula;
 }

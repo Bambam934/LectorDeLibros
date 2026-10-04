@@ -137,6 +137,17 @@ class ReadingCustomizationSheet extends StatelessWidget {
                     onChanged: cubit.setJustifyText,
                   ),
 
+                  // ── Code read aloud ──
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Leer los bloques de código en voz alta'),
+                    subtitle: const Text(
+                      'Si está apagado, la voz dice «Bloque de código» y sigue',
+                    ),
+                    value: prefs.readCodeAloud,
+                    onChanged: cubit.setReadCodeAloud,
+                  ),
+
                   const SizedBox(height: 16),
 
                   // ── Column width (mostly desktop) ──

@@ -3,6 +3,7 @@ import 'package:fpdart/fpdart.dart';
 import '../../../../core/errors/failures.dart';
 import '../../../../core/utils/sorted_lookup.dart';
 import '../../domain/entities/chapter_audio.dart';
+import '../../domain/entities/chapter_block.dart';
 import '../../domain/repositories/audio_player_repository.dart';
 import '../../domain/repositories/reader_repository.dart';
 import '../../domain/repositories/tts_repository.dart';
@@ -50,11 +51,14 @@ class AudioTtsRepository implements TtsRepository {
     return right(unit);
   }
 
+  /// El audio viene renderizado del servidor, que no conoce los bloques:
+  /// [blocks] se ignora.
   @override
   Future<Either<Failure, Unit>> speak({
     required String text,
     required List<String> words,
     int startWordIndex = 0,
+    List<ChapterBlock> blocks = const [],
   }) async {
     if (_currentBookId == null || _currentChapterId == null) {
       return left(const ServerFailure('No book/chapter context set.'));

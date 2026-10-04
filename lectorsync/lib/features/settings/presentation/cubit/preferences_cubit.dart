@@ -43,5 +43,8 @@ class PreferencesCubit extends Cubit<ReadingPreferences> {
   void setJustifyText(bool justify) =>
       _update(state.copyWith(justifyText: justify));
 
+  void setReadCodeAloud(bool read) =>
+      _update(state.copyWith(readCodeAloud: read));
+
   void resetToDefaults() => _update(const ReadingPreferences());
 }

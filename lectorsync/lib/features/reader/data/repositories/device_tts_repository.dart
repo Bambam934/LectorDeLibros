@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../../core/errors/failures.dart';
 import '../../../../core/utils/sorted_lookup.dart';
+import '../../domain/entities/chapter_block.dart';
 import '../../domain/repositories/tts_repository.dart';
 import 'tts/desktop_tts_adapter.dart';
 import 'tts/language_detector.dart';
@@ -139,6 +140,12 @@ class DeviceTtsRepository implements TtsRepository {
   Map<String, String>? _selectedVoice;
   String? _detectedLanguage;
   bool autoLanguageEnabled = true;
+
+  /// Leer en voz alta los bloques de código en vez de avisar con "Bloque de
+  /// código." (ajuste "Leer los bloques de código en voz alta"). Se aplica
+  /// en el siguiente [speak]: quien lo cambie con la voz sonando debe
+  /// reiniciarla en la palabra actual.
+  bool readCodeAloud = false;
 
   // ── Calibration persistence ─────────────────────────────────────────
   //
@@ -500,6 +507,7 @@ class DeviceTtsRepository implements TtsRepository {
     required String text,
     required List<String> words,
     int startWordIndex = 0,
+    List<ChapterBlock> blocks = const [],
   }) async {
     if (!_isInitialized) {
       final init = await initialize();
@@ -597,24 +605,39 @@ class DeviceTtsRepository implements TtsRepository {
       final segmentProse = _adapter.capabilities.supportsWordBoundary
           ? splitIntoSegments
           : splitIntoSentences;
-      // Aislar los párrafos-fórmula ANTES de segmentar la prosa. La
-      // heurística mide proporciones del bloque entero y está calibrada para
-      // un párrafo: corriéndola sobre trozos de 200 palabras (o sobre
-      // oraciones ya fusionadas con su vecina) no se disparaba nunca, y la
-      // voz leía la ecuación aplanada aunque la pantalla la pintara como
-      // fórmula. Ver `splitIsolatingFormulas`.
-      final initialSegments = seg.splitIsolatingFormulas(
-        speakText,
-        speakWords,
-        clampedStart,
-        segmentProse: segmentProse,
-      );
+      // Con maquetación (ADR 13) los bloques ya dicen qué es fórmula, figura
+      // o código; si no cuadran con las palabras se sigue sin ellos.
+      final blockSegments = blocks.isEmpty
+          ? null
+          : seg.splitByBlocks(
+              blocks,
+              words,
+              clampedStart,
+              segmentProse: segmentProse,
+              readCode: readCodeAloud,
+            );
+      // Sin bloques: aislar los párrafos-fórmula ANTES de segmentar la
+      // prosa. La heurística mide proporciones del bloque entero y está
+      // calibrada para un párrafo: corriéndola sobre trozos de 200 palabras
+      // (o sobre oraciones ya fusionadas con su vecina) no se disparaba
+      // nunca, y la voz leía la ecuación aplanada aunque la pantalla la
+      // pintara como fórmula. Ver `splitIsolatingFormulas`.
+      //
       // Silenciar las fórmulas ANTES de trocear por longitud: el texto ya
       // sustituido es corto y no hay nada que partir. Al revés, una fórmula
       // larga se habría repartido en varios trozos y cada uno diría
       // "Fórmula." por separado.
+      final initialSegments = blockSegments ??
+          seg.muteFormulaSegments(
+            seg.splitIsolatingFormulas(
+              speakText,
+              speakWords,
+              clampedStart,
+              segmentProse: segmentProse,
+            ),
+          );
       _pendingSegments = enforceMaxSegmentLength(
-        seg.muteFormulaSegments(initialSegments),
+        initialSegments,
         _adapter.capabilities.maxUtteranceChars,
       );
       _currentSegmentIndex = 0;
@@ -711,7 +734,11 @@ class DeviceTtsRepository implements TtsRepository {
       }
 
       _startOffset = effectiveStartWord;
-      _charOffsets = _buildCharOffsets(textToSpeak, effectiveWords);
+      _charOffsets = _buildCharOffsets(
+        textToSpeak,
+        effectiveWords,
+        announcement: segment.isFormula,
+      );
       _receivedRealProgress = false;
       _lastKnownLocalWordIdx = 0;
 
@@ -1278,7 +1305,21 @@ class DeviceTtsRepository implements TtsRepository {
     return words.sublist(startIdx).join(' ');
   }
 
-  List<int> _buildCharOffsets(String text, List<String> words) {
+  List<int> _buildCharOffsets(
+    String text,
+    List<String> words, {
+    bool announcement = false,
+  }) {
+    // Un aviso ("Fórmula.", "Bloque de código.") se pronuncia con un texto
+    // distinto del que representa: sus palabras se reparten a lo largo del
+    // aviso sin buscarlas. Buscarlas fallaba en cuanto una coincidía por
+    // casualidad —el "de" de un comentario en español dentro del código
+    // aparece en "Bloque de código."— y el resaltado saltaba.
+    if (announcement && words.length > 1 && text.isNotEmpty) {
+      return [
+        for (var i = 0; i < words.length; i++) (i * text.length) ~/ words.length,
+      ];
+    }
     final offsets = <int>[];
     int cursor = 0;
     int notFoundCount = 0;

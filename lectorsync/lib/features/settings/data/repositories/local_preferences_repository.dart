@@ -11,6 +11,7 @@ class LocalPreferencesRepository implements PreferencesRepository {
   static const _kMaxColumnWidth = 'reading.max_column_width';
   static const _kPalette = 'reading.palette';
   static const _kJustifyText = 'reading.justify_text';
+  static const _kReadCodeAloud = 'reading.read_code_aloud';
 
   @override
   Future<ReadingPreferences> load() async {
@@ -41,6 +42,7 @@ class LocalPreferencesRepository implements PreferencesRepository {
       // en una columna de móvil abre huecos entre palabras. Quien lo quiera
       // lo activa en el panel y su elección se persiste aquí.
       justifyText: prefs.getBool(_kJustifyText) ?? false,
+      readCodeAloud: prefs.getBool(_kReadCodeAloud) ?? false,
     );
   }
 
@@ -55,5 +57,6 @@ class LocalPreferencesRepository implements PreferencesRepository {
         p.maxColumnWidth.isFinite ? p.maxColumnWidth : -1.0);
     await prefs.setString(_kPalette, p.palette.name);
     await prefs.setBool(_kJustifyText, p.justifyText);
+    await prefs.setBool(_kReadCodeAloud, p.readCodeAloud);
   }
 }

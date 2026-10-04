@@ -12,6 +12,7 @@ import 'package:lectorsync/features/reader/data/repositories/bookmark_repository
 import 'package:lectorsync/features/reader/data/repositories/device_tts_repository.dart';
 import 'package:lectorsync/features/reader/domain/entities/chapter.dart';
 import 'package:lectorsync/features/reader/domain/entities/chapter_audio.dart';
+import 'package:lectorsync/features/reader/domain/entities/chapter_block.dart';
 import 'package:lectorsync/features/reader/domain/repositories/reader_repository.dart';
 import 'package:lectorsync/features/reader/domain/repositories/tts_repository.dart';
 import 'package:lectorsync/features/reader/presentation/pages/reader_page.dart';
@@ -42,6 +43,7 @@ class _FakeTtsRepository implements TtsRepository {
     required String text,
     required List<String> words,
     int startWordIndex = 0,
+    List<ChapterBlock> blocks = const [],
   }) async => right(unit);
 
   @override

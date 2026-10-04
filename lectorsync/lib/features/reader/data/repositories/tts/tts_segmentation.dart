@@ -1,3 +1,6 @@
+import 'dart:math' as math;
+
+import '../../../domain/entities/chapter_block.dart';
 import '../../parsing/formula_detector.dart';
 import 'speak_segment.dart';
 
@@ -490,6 +493,131 @@ List<SpeakSegment> muteFormulaSegments(
   }
 
   return changed ? result : segments;
+}
+
+/// Lo que la voz dice al llegar a un bloque de código que no se lee.
+const String kCodeSpokenReplacement = 'Bloque de código.';
+
+/// Lo que la voz dice al llegar a una figura que no es una fórmula.
+const String kFigureSpokenReplacement = 'Figura.';
+
+final RegExp _token = RegExp(r'\S+');
+final RegExp _closingPunctuation = RegExp(r'[.!?:;…]$');
+
+/// Segmenta un capítulo con bloques (ADR 13) desde [startWordIndex].
+///
+/// Es la generalización de [splitIsolatingFormulas] cuando la maquetación ya
+/// dice qué es cada cosa: cada bloque especial va en su propio segmento y la
+/// prosa seguida se segmenta **de una pieza** con [segmentProse], por la
+/// misma razón que allí (cada utterance extra cuesta 50-100 ms en móvil).
+///
+/// - **Título:** se lee con un punto detrás si no lo lleva, para que la voz
+///   haga la pausa.
+/// - **Código:** con [readCode] se lee como prosa; sin él, la voz dice
+///   [kCodeSpokenReplacement] y el seguidor recorre sus palabras durante el
+///   aviso. Las palabras del código cuentan siempre, así que cambiar el
+///   ajuste a mitad de libro no mueve la posición: es lo mismo que hace
+///   [muteFormulaSegments].
+/// - **Figura:** dice su palabra marcadora ("Fórmula." o "Figura.").
+///
+/// Aquí no se aplica [looksLikeFormula]: la maquetación ya separó las
+/// fórmulas de verdad, y la heurística enmarcaba hasta los teléfonos.
+///
+/// Devuelve `null` si las palabras de los bloques no suman [words]: el
+/// llamador cae entonces a la segmentación sin bloques antes que desalinear
+/// el seguidor.
+List<SpeakSegment>? splitByBlocks(
+  List<ChapterBlock> blocks,
+  List<String> words,
+  int startWordIndex, {
+  required List<SpeakSegment> Function(String, List<String>, int) segmentProse,
+  bool readCode = false,
+}) {
+  final counts = [for (final b in blocks) b.wordCount];
+  if (counts.fold(0, (a, b) => a + b) != words.length) return null;
+
+  final result = <SpeakSegment>[];
+  final proseTexts = <String>[];
+  var proseStart = -1;
+  var proseEnd = -1;
+
+  void flushProse() {
+    if (proseStart < 0) return;
+    result.addAll(segmentProse(
+      proseTexts.join('\n\n'),
+      words.sublist(proseStart, proseEnd),
+      proseStart,
+    ));
+    proseTexts.clear();
+    proseStart = -1;
+  }
+
+  SpeakSegment announce(String text, int from, int to) => SpeakSegment(
+        text: text,
+        words: words.sublist(from, to),
+        globalStartWordIndex: from,
+        audibleCharCount: computeAudibleCharCount(text),
+        hasNumbers: false,
+        isFormula: true,
+      );
+
+  var cursor = 0;
+  for (var i = 0; i < blocks.length; i++) {
+    final block = blocks[i];
+    final start = cursor;
+    final end = cursor + counts[i];
+    cursor = end;
+    if (end == start || end <= startWordIndex) continue;
+    final from = math.max(start, startWordIndex);
+    final text =
+        from == start ? block.text : _textFromToken(block.text, from - start);
+
+    switch (block.kind) {
+      case ChapterBlockKind.paragraph:
+        if (proseStart < 0) proseStart = from;
+        proseTexts.add(text);
+        proseEnd = end;
+      case ChapterBlockKind.code when readCode:
+        flushProse();
+        result.addAll(segmentProse(text, words.sublist(from, end), from));
+      case ChapterBlockKind.heading:
+        flushProse();
+        final trimmed = text.trimRight();
+        final spoken =
+            _closingPunctuation.hasMatch(trimmed) ? trimmed : '$trimmed.';
+        result.add(SpeakSegment(
+          text: spoken,
+          words: words.sublist(from, end),
+          globalStartWordIndex: from,
+          audibleCharCount: computeAudibleCharCount(spoken),
+          hasNumbers: detectNumbers(spoken),
+        ));
+      case ChapterBlockKind.code:
+        flushProse();
+        result.add(announce(kCodeSpokenReplacement, from, end));
+      case ChapterBlockKind.figure:
+        flushProse();
+        result.add(announce(
+          block.figureKind == FigureKind.formula
+              ? kFormulaSpokenReplacement
+              : kFigureSpokenReplacement,
+          from,
+          end,
+        ));
+    }
+  }
+  flushProse();
+  return result;
+}
+
+/// [text] desde su palabra número [k] (base 0), con el espacio original.
+String _textFromToken(String text, int k) {
+  var i = 0;
+  for (final m in _token.allMatches(text)) {
+    if (i == k) return text.substring(m.start);
+    i++;
+  }
+  return '';
 }
 
 /// True iff the given engine error message indicates an
