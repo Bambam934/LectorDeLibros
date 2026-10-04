@@ -80,6 +80,8 @@ Extraer texto de un PDF de matemáticas aplana las ecuaciones: una integral acab
 
 `syncfusion_flutter_pdf` se queda para extraer texto; **no sabe rasterizar**, y por eso entró `pdfrx`.
 
+**Reabierto el 2026-10-03 por el ADR 13**: en los PDF offline la detección pasa a la extracción (fuente y posición) y el capítulo guarda bloques tipados.
+
 ## 8. Sonidos ambientales (2026-08-11)
 
 Los cinco presets apuntaban al CDN de Pixabay, que bloquea el hotlinking: los cinco devolvían HTTP 403 y la app culpaba a la conexión del usuario.
@@ -132,3 +134,15 @@ Diseñado con `/diseñar` y aprobado por secciones. Dos funciones que comparten 
 - **Si el servicio no arranca** (cualquier plataforma que no sea Android, o un fallo), no se registra y el lector vuelve a parar la voz en segundo plano: nunca queda a medio funcionar.
 
 Pendiente de verificar en dispositivo (no hay pruebas automáticas posibles): todo lo que toca el sistema —icono de No molestar, notificaciones silenciadas, voz audible con la regla puesta, lectura de más de 10 minutos con la pantalla apagada cruzando capítulos, controles de bloqueo y auriculares, pausa con llamadas y al desconectar los auriculares— y en Windows, entrar y salir de pantalla completa sin los fallos conocidos de `window_manager`.
+
+## 13. Bloques tipados por maquetación en los PDF offline (diseño aprobado 2026-10-03, pendiente de implementar)
+
+Reabre el §7, que evitó a propósito tocar la extracción, la entidad `Chapter` y la caché. Medido en los libros reales del usuario: en "Cálculo integral" las ecuaciones son dibujos vectoriales (página 136: huecos entre líneas sin texto ni imágenes; las fuentes matemáticas son el 1,5 % del texto) y la app se las salta sin avisar, mientras enmarca teléfonos como fórmulas. En "Ciencia de datos desde cero" el código va en LiberationMono (30 % de los caracteres) y su sangría se recupera por la posición.
+
+- **Detección en la extracción, solo en modo offline**: `extractTextLines` (fuente, tamaño y posición; `repairSurrogates` sobre cada línea) dentro del isolate. La fuente de cuerpo es la de más caracteres. Por línea: cabecera o pie (franja del margen y repetición en ≥ 3 páginas), código (la mayoría de sus palabras en monoespaciada; sangría por la posición), título (otra familia o más tamaño, línea corta y separada) y cuerpo, unido en párrafos por la sangría de primera línea, los huecos y los guiones. **Plan B por libro**: sin una fuente de cuerpo clara (< 40 % de los caracteres), el proceso actual.
+- **Ecuaciones y figuras**: un hueco vertical de más de ~2 interlineados entre líneas de la misma página, **validado pintándolo en miniatura con pdfrx** (sin esa comprobación se inventarían fórmulas en huecos vacíos). Se muestran recortadas del PDF: hasta ~4 líneas son "Fórmula"; más altas, "Figura".
+- **Modelo**: `Chapter` con bloques (párrafo, título, código y figura con página y rectángulo). Las palabras siguen siendo la única referencia de progreso, resaltado y voz: la figura aporta una palabra marcadora y el código cuenta las suyas aunque la voz lo salte. Caché v6. Sin bloques (servidor, cachés viejas), el comportamiento actual.
+- **Pantalla**: título destacado; código en monoespaciada sin partir líneas, con desplazamiento horizontal; figura recortada al ancho de la columna, invertida en los temas oscuros solo si es una fórmula. "Ver en el libro" va directo a su página.
+- **Voz**: el título con pausa; el código según el ajuste "Leer los bloques de código en voz alta" (por defecto avisa "Bloque de código." y lo salta); la figura dice "Fórmula." o "Figura.".
+- **Markdown**: las vallas pasan a bloques de código y los `###`, a títulos. **TXT**, como hoy, con una regla más para no tomar teléfonos por fórmulas.
+- **Descartados**: afinar las heurísticas de texto (no recuperan las ecuaciones vectoriales ni la sangría); un modo página (sin reflujo, inutilizable en el móvil; queda como posible complemento); el servidor y los EPUB ahora (pendientes con la fase 1 de contenido rico); copiar código, resaltado de sintaxis, código en línea en monoespaciada y capítulos por títulos (YAGNI).
