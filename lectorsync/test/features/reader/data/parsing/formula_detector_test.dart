@@ -66,6 +66,14 @@ void main() {
     test('una lista de fechas', () {
       expect(looksLikeFormula('Madrid, 12 de octubre de 1492'), isFalse);
     });
+
+    test('los teléfonos y faxes de una página de créditos', () {
+      // De "Cálculo integral": salían enmarcados como fórmula.
+      expect(looksLikeFormula('P.B.X. (+593 7) 2050000'), isFalse);
+      expect(looksLikeFormula('Fax: (+593 7) 4 088958'), isFalse);
+      expect(looksLikeFormula('(+593 7) 2050000'), isFalse);
+      expect(looksLikeFormula('Tel. 2050000'), isFalse);
+    });
   });
 
   group('sobre un capítulo entero', () {

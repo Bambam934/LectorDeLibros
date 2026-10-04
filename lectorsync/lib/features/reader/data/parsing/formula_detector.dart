@@ -40,6 +40,14 @@ final _whitespaceRe = RegExp(r'\s+');
 /// Puntuación que puede colgar de una palabra sin dejar de serlo.
 final _trailingPunctRe = RegExp(r'^[¿¡("]+|[.,;:!?)"]+$');
 
+/// Teléfonos y faxes de una página de créditos: "P.B.X. (+593 7) 2050000",
+/// "Fax: (+593 7) 4 088958", "Tel. 2050000". Tienen paréntesis, un signo
+/// más y casi ninguna letra, así que pasaban por fórmula y salían enmarcados.
+final _phoneRe = RegExp(
+  r'\b(?:tel[ée]fono|telf?|fax|p\.?\s?b\.?\s?x)\b|\(\+\d{1,3}[\d\s]*\)\s*\d[\d\s-]{4,}',
+  caseSensitive: false,
+);
+
 /// Proporción máxima de letras para considerar el bloque una fórmula.
 ///
 /// La prosa española ronda 0,80: incluso una frase cargada de cifras como
@@ -62,6 +70,7 @@ const _maxWordRatioWithSymbols = 0.5;
 bool looksLikeFormula(String paragraph) {
   final text = paragraph.trim();
   if (text.isEmpty) return false;
+  if (_phoneRe.hasMatch(text)) return false;
 
   final tokens = text.split(_whitespaceRe).where((t) => t.isNotEmpty).toList();
   if (tokens.isEmpty) return false;
