@@ -233,15 +233,16 @@ class LocalReaderRepository implements ReaderRepository {
   }
 
   String _chaptersCachePathFor(String storedPath) {
-    // Para `/path/{id}.pdf` → `/path/{id}.chapters.v4.json`
+    // Para `/path/{id}.pdf` → `/path/{id}.chapters.v5.json`
     //
     // El sufijo de versión invalida las cachés de parsers anteriores.
     // v2 (2026-07-19): reflow de texto. v3 (2026-07-21): stripPdfNoise
     // (índice + encabezados/pies repetidos). v4 (2026-10-02): stripPdfNoise
     // deja de borrar los rótulos numerados en mayúsculas ("EJEMPLO 3").
-    // Subir esta versión al cambiar cualquier parser, o el fix no se ve en
-    // libros ya importados.
-    return '${chapterCacheBase(storedPath)}v4.json';
+    // v5 (2026-10-03): repairSurrogates (la 𝑥 de las fórmulas rompía el
+    // pintado). Subir esta versión al cambiar cualquier parser, o el fix no
+    // se ve en libros ya importados.
+    return '${chapterCacheBase(storedPath)}v5.json';
   }
 
   // ---------- format parsers ----------
@@ -264,7 +265,7 @@ class LocalReaderRepository implements ReaderRepository {
       for (var i = 0; i < pageCount; i++) {
         // extractText() en una sola página es estable y rápido.
         final pageText = extractor.extractText(startPageIndex: i, endPageIndex: i);
-        pages.add(pageText);
+        pages.add(repairSurrogates(pageText));
       }
       final fullText = stripPdfNoise(pages.join('\n\n'));
       return _splitByWordCount(fullText);
@@ -336,6 +337,43 @@ class LocalReaderRepository implements ReaderRepository {
       ));
     }
     return chapters;
+  }
+
+  /// Repara los sustitutos UTF-16 que devuelve mal el extractor de PDF.
+  ///
+  /// Syncfusion entrega los símbolos fuera del plano básico (la 𝑥 cursiva
+  /// de las fórmulas, U+1D465 = `D835 DC65`) con la segunda mitad del par
+  /// mutilada: pierde el nibble alto y `DC65` llega como `0C65`. Un
+  /// sustituto suelto hace que Flutter lance «string is not well-formed
+  /// UTF-16» al pintar el párrafo. Se recompone el par cuando encaja en ese
+  /// patrón y cualquier otra mitad suelta se cambia por U+FFFD.
+  static String repairSurrogates(String text) {
+    final units = text.codeUnits;
+    final out = <int>[];
+    var changed = false;
+    for (var i = 0; i < units.length; i++) {
+      final u = units[i];
+      if (u >= 0xD800 && u <= 0xDBFF) {
+        final next = i + 1 < units.length ? units[i + 1] : -1;
+        if (next >= 0xDC00 && next <= 0xDFFF) {
+          out..add(u)..add(next);
+        } else if (next >= 0x0C00 && next <= 0x0FFF) {
+          out..add(u)..add(next | 0xD000);
+          changed = true;
+        } else {
+          out.add(0xFFFD);
+          changed = true;
+          continue;
+        }
+        i++;
+      } else if (u >= 0xDC00 && u <= 0xDFFF) {
+        out.add(0xFFFD);
+        changed = true;
+      } else {
+        out.add(u);
+      }
+    }
+    return changed ? String.fromCharCodes(out) : text;
   }
 
   /// Reflow del texto extraído de PDF/TXT.

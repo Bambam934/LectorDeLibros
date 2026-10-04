@@ -56,13 +56,13 @@ void main() {
     await dir.delete(recursive: true);
   });
 
-  test('abre un PDF, lo cachea en v4 y borra la caché de la versión vieja',
+  test('abre un PDF, lo cachea en v5 y borra la caché de la versión vieja',
       () async {
     final stored = '${dir.path}${sep}libro.pdf';
     await File(stored).writeAsBytes(
       _pdfWith(['Primera pagina del libro.', 'Segunda pagina del libro.']),
     );
-    final stale = File('${dir.path}${sep}libro.chapters.v3.json');
+    final stale = File('${dir.path}${sep}libro.chapters.v4.json');
     await stale.writeAsString('[]');
     final store = _FakeStore({'libro': stored});
 
@@ -71,7 +71,7 @@ void main() {
     final chapters = result.getOrElse((f) => fail('falló: ${f.message}'));
     expect(chapters, isNotEmpty);
     expect(store.totalChapters, chapters.length);
-    expect(File('${dir.path}${sep}libro.chapters.v4.json').existsSync(), isTrue);
+    expect(File('${dir.path}${sep}libro.chapters.v5.json').existsSync(), isTrue);
     expect(stale.existsSync(), isFalse);
 
     final chapter = await LocalReaderRepository(store: store)
