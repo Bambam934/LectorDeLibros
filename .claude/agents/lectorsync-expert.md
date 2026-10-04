@@ -5,7 +5,7 @@ description: Experto del proyecto LectorSync (lectura sincronizada TTS multi-pla
 tools: Read, Grep, Glob, Bash, Edit, Write
 ---
 
-Experto de **LectorSync**: Flutter (Android, iOS, Web, Windows) con TTS palabra a palabra + backend Fastify/Drizzle/PostgreSQL 16 en Docker. Rama `desarrollo`, `main` estable; el push lo hace el usuario. Modo offline por defecto (su Moto G54 y Windows). ADR en `.claude/docs/DECISIONS.md`.
+Experto de **LectorSync**: Flutter (Android, iOS, Web, Windows) con TTS palabra a palabra + backend Fastify/Drizzle/PostgreSQL 16 en Docker. Rama `desarrollo`, `main` estable; el push lo hace el usuario. Modo offline por defecto (Pixel y Windows). ADR en `.claude/docs/DECISIONS.md`.
 
 # ⚠️ Restricciones críticas
 
@@ -27,7 +27,7 @@ Backend: `routes.ts` solo compone; handlers en `routes/*.ts` sin tocar la DB; l�
 **TTS**
 - `speak()` devuelve `1` (Android/Windows/macOS) o `true` (iOS/Web): comprobar ambos o el retry reinicia el audio (S17, 2026-05-25).
 - **Windows = WinRT, no SAPI5** (flutter_tts 4.2.5). Su `stop` nativo antes del primer `speak` con `awaitSpeakCompletion(true)` **cierra la app**: `DesktopTtsAdapter` lo evita; todo camino que pare el motor pasa por el adaptador (2026-10-03).
-- Sin word-boundary (Windows, Web): un segmento = una oración; el tracker arranca en `startHandler` (+700 ms de fallback); calibración por `(plataforma, voz)`, EMA, base 400 ms. Pixel: 368 ms/palabra, primer fonema 52 ms (~500 ms tras cambiar de voz) (S14-16, 2026-07-19).
+- Sin word-boundary (Windows, Web): un segmento = una oración; el tracker arranca en `startHandler` (+700 ms de fallback); calibración por `(plataforma, voz)`, EMA, base 400 ms. (S14-16, 2026-07-19).
 - Voces no portables entre plataformas (keys `_mobile`/`_web`/`_desktop`); las `-network` necesitan internet (`voiceNeedsNetwork`, 2026-10-03).
 - just_audio: `playing` sigue en true al terminar → `completedStream`; reutilizar las `StreamAudioSource` (2026-10-02/03).
 - Web: ningún `await` entre el tap y `speak()`; se pre-inicializa en `_onStarted` (S12).
@@ -40,18 +40,18 @@ Backend: `routes.ts` solo compone; handlers en `routes/*.ts` sin tocar la DB; l�
 - `copyWith(fontFamily: null)` conserva la familia; `PdfDocumentRef` (pdfrx) en `initState`, no en `build`.
 
 **Offline y almacenamiento** (ADR §4)
-- Cachés `{id}.chapters.vN.json` (`core/storage/chapter_cache_files.dart`): **subir la versión al cambiar cualquier parser** (v4).
+- Cachés `{id}.chapters.vN.json` (`core/storage/chapter_cache_files.dart`): **subir la versión al cambiar cualquier parser** (v6).
 - Nada grande en SharedPreferences (se carga y reescribe entero): `ChapterCacheRepository` solo en modo conectado (2026-10-03).
 - TXT/MD por `decodeTextBytes` (UTF-8 y si no Windows-1252); PDF en un isolate. EPUB offline sin soporte.
 
-**PDF y fórmulas** (ADR §7)
-- Saltos de maquetación: `reflowExtractedText` + `stripPdfNoise` (número **pegado** a la mayúscula; con espacio borraba "EJEMPLO 3", 2026-10-02), replicados en `pdf-cleanup.ts`.
-- Detector de fórmulas por párrafo; **Syncfusion no rasteriza** (se supuso lo contrario el 2026-07-21) → `pdfrx`. Spike MathML 2026-07-19: SRE en español necesita ~10 reemplazos.
-- Depurar con datos reales: `adb exec-out run-as com.lectorsync.lectorsync cat app_flutter/lectorsync_books/<uuid>.chapters.v4.json`, prototipar antes de tocar Dart (un fix a ciegas rompió el ciclo de vida, 2026-07-21).
+**PDF y fórmulas** (ADR §7 y §13)
+- Bloques por maquetación (§13, 2026-10-04): `extractTextLines` corta la línea visual al cambiar la altura del glifo, a veces da `fontSize` 1,0 (vale la altura del rectángulo) y escribe con su código decimal los glifos que no traduce ("super31cie" = fi) aunque `extractText` sí: se coteja. Plan B: `reflowExtractedText` + `stripPdfNoise`, replicados en `pdf-cleanup.ts`.
+- Syncfusion no rasteriza: `pdfrx`, que funciona en `flutter test` en Windows con `Pdfrx.cacheDirectoryPath`.
+- Calibrar con los PDF reales (`adb exec-out run-as com.lectorsync.lectorsync cat app_flutter/lectorsync_books/<uuid>.pdf`) en una sonda `test/zz_*_test.dart` sin commitear; un fix a ciegas rompió el ciclo de vida (2026-07-21).
 
 **Backend y dependencias**
 - `AUDIO_DIR` en `routes/shared.ts` necesita tres `'..'`. `DeviceTtsRepository` guarda delegaciones estáticas por 44 usos en tests.
-- `file_picker` y `syncfusion_flutter_pdf` sin subir de major a propósito (sin cobertura). El aviso de pdfjs (CVE-2026-16633) es del visor, no de `getTextContent`.
+- `file_picker` y `syncfusion_flutter_pdf` sin subir de major a propósito (sin cobertura).
 - `npm audit fix` **sin** `--omit=dev`: poda las devDependencies y el error sale en español (2026-10-03); arreglo: `npm install`.
 
 **Android, Windows y distribución**
