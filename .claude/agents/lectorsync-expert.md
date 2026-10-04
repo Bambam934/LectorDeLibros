@@ -35,7 +35,7 @@ Backend: `routes.ts` solo compone; handlers en `routes/*.ts` sin tocar la DB; l�
 **Ciclo de vida y widgets**
 - Solo `paused` para la voz (`inactive` la mataba al primer tap, S12), y desde 2026-10-03 ni `paused` si `ReadingAudioHandler` está enganchado: **confirmado por el usuario** que se cortaba al apagar la pantalla.
 - Nada de buscar ancestros en `dispose()`: aborta el desmontaje y el bloc no se cierra (2026-10-03). Streams nunca en `build()`: en `didChangeDependencies` + `_disposed` (2026-07-21).
-- `AudioServiceActivity` ejecuta `main()` antes de registrar los canales: lo del arranque del proceso, en Kotlin.
+- audio_service: `main()` corre antes de los canales de `AudioServiceActivity` (lo del arranque, en Kotlin). Quedarse en primer plano en pausa retenía el wakelock, y su `stop()` (solo `stopSelf`, servicio enlazado) no lo soltaba: pausa con 5 s de margen y, al cerrar, un único estado parado + `idle` (2026-10-03).
 - Sliders Web/Desktop: `onChangeStart` → `onChanged` local → `onChangeEnd` dispatch, o el ghost tick reinicia el audio (S13). Seguir la voz: `jumpTo` + `ensureVisible` post-frame y contador `_recenterRequests`.
 - `copyWith(fontFamily: null)` conserva la familia; `PdfDocumentRef` (pdfrx) en `initState`, no en `build`.
 
@@ -51,14 +51,13 @@ Backend: `routes.ts` solo compone; handlers en `routes/*.ts` sin tocar la DB; l�
 
 **Backend y dependencias**
 - `AUDIO_DIR` en `routes/shared.ts` necesita tres `'..'`. `DeviceTtsRepository` guarda delegaciones estáticas por 44 usos en tests.
-- `file_picker` y `syncfusion_flutter_pdf` sin subir de major a propósito (sin cobertura). El aviso de pdfjs (CVE-2026-16633) es del visor, no de `getTextContent`; `getDocument` aún sin `isEvalSupported: false`.
+- `file_picker` y `syncfusion_flutter_pdf` sin subir de major a propósito (sin cobertura). El aviso de pdfjs (CVE-2026-16633) es del visor, no de `getTextContent`.
 - `npm audit fix` **sin** `--omit=dev`: poda las devDependencies y el error sale en español (2026-10-03); arreglo: `npm install`.
 
 **Android, Windows y distribución**
 - Errores de instalación siempre con `adb install` (`--split-per-abi` multiplica el versionCode → `INSTALL_FAILED_VERSION_DOWNGRADE`); `python -m http.server` corrompe APKs (sin Range) (S18).
-- APK 78,6 MiB: 73,9 nativas (x86_64 27,1 solo emuladores; PDFium 16,4). `--target-platform android-arm,android-arm64` quitaría ~27 (2026-10-03).
 - Nada de CDNs de terceros para lo empaquetable (Pixabay 403); ningún `assert` en listeners de streams (2026-07-19).
-- Plugin nativo en Windows sin UI: sonda `flutter run -d windows -t tool/sonda.dart` con prints antes/después y `exit(0)`; "Lost connection" sin el después = cierre nativo.
+- Plugin nativo en Windows: sonda `flutter run -d windows -t tool/sonda.dart` con prints y `exit(0)`; "Lost connection" sin el último print = cierre nativo.
 
 # Convenciones y comandos
 
@@ -68,4 +67,4 @@ Comentarios y commits en español, identificadores en inglés; `tipo(área): ver
 
 # Auto-entrenamiento y modo de trabajo
 
-Al cerrar cada tarea, persistir aquí lo no derivable del código que cambie tareas futuras (una línea, fecha, evidencia), con saldo cero: cada línea nueva quita otra; límite 1000 palabras. Las correcciones del usuario no se borran sin su permiso. Protocolo: `~/.claude/wiki/auto-entrenamiento.md`; método: `patrones-fable.md` y los comandos globales.
+Al cerrar cada tarea, persistir aquí lo no derivable del código que cambie tareas futuras (una línea, fecha, evidencia), con saldo cero y como máximo 1000 palabras. Las correcciones del usuario no se borran sin su permiso. Protocolo: `~/.claude/wiki/auto-entrenamiento.md`; método: `patrones-fable.md`.
