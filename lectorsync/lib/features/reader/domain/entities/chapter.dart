@@ -1,5 +1,7 @@
 import 'package:equatable/equatable.dart';
 
+import 'chapter_block.dart';
+
 class Chapter extends Equatable {
   const Chapter({
     required this.id,
@@ -8,6 +10,7 @@ class Chapter extends Equatable {
     required this.wordCount,
     this.text,
     this.words = const [],
+    this.blocks = const [],
   });
 
   factory Chapter.fromSummaryJson(Map<String, dynamic> json) {
@@ -38,6 +41,20 @@ class Chapter extends Equatable {
   final String? text;
   final List<String> words;
 
+  /// Maquetación del capítulo (ADR 13), o vacía si no la tiene.
+  ///
+  /// Con bloques, [text] es la unión de sus textos separados por una línea en
+  /// blanco ([textOfBlocks]) y la pantalla pinta desde aquí, no desde
+  /// [paragraphs]: el código lleva líneas en blanco dentro y partirlo por
+  /// ellas lo rompería.
+  final List<ChapterBlock> blocks;
+
+  /// Texto de un capítulo con [blocks]. Sus palabras son, en orden, las de
+  /// cada bloque, así que los índices de palabra de los bloques cuadran con
+  /// [words].
+  static String textOfBlocks(List<ChapterBlock> blocks) =>
+      blocks.map((b) => b.text).join('\n\n');
+
   List<String> get paragraphs {
     final content = text;
     if (content == null || content.trim().isEmpty) {
@@ -60,5 +77,6 @@ class Chapter extends Equatable {
   }
 
   @override
-  List<Object?> get props => [id, title, orderIndex, wordCount, text, words];
+  List<Object?> get props =>
+      [id, title, orderIndex, wordCount, text, words, blocks];
 }

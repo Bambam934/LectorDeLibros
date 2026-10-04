@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show compute;
+import 'package:flutter/foundation.dart' show compute, visibleForTesting;
 import 'package:fpdart/fpdart.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
 
@@ -10,7 +10,11 @@ import '../../../../core/storage/chapter_cache_files.dart';
 import '../../../../core/storage/local_book_store.dart';
 import '../../domain/entities/chapter.dart';
 import '../../domain/entities/chapter_audio.dart';
+import '../../domain/entities/chapter_block.dart';
 import '../../domain/repositories/reader_repository.dart';
+import '../parsing/ink_probe.dart';
+import '../parsing/markdown_blocks.dart';
+import '../parsing/pdf_layout.dart';
 import '../parsing/text_decoding.dart';
 
 /// Offline-first reader repository.
@@ -18,12 +22,16 @@ import '../parsing/text_decoding.dart';
 /// Lee los archivos persistidos por el store local y los parsea
 /// en capítulos según el formato:
 ///
-/// - **PDF**: usa Syncfusion PdfTextExtractor para extraer texto y lo
-///   divide en capítulos por tamaño (~3000 palabras cada uno).
+/// - **PDF**: lee las líneas con su posición y su fuente (Syncfusion) y las
+///   convierte en bloques tipados: párrafos, títulos, código y figuras
+///   recortadas del original (ADR 13, ver [analyzePdfLayout]). Los divide en
+///   capítulos por tamaño (~3000 palabras cada uno). Un libro sin fuente de
+///   cuerpo clara sigue con el texto plano de siempre.
 /// - **TXT / MD**: lee el archivo como UTF-8 (o Windows-1252 si no lo es,
 ///   ver [decodeTextBytes]) e intenta detectar encabezados
 ///   ("Capítulo X", "Chapter X", "# Título" en markdown) para los cortes.
-///   Si no encuentra estructura, cae al modo por tamaño.
+///   Si no encuentra estructura, cae al modo por tamaño. El Markdown también
+///   sale en bloques, con sus vallas de código.
 /// - **EPUB**: no soportado en esta primera iteración offline; devuelve
 ///   un error informativo.
 ///
@@ -34,10 +42,14 @@ import '../parsing/text_decoding.dart';
 /// offline usa el TTS del dispositivo (DeviceTtsRepository) que solo
 /// necesita el texto del capítulo.
 class LocalReaderRepository implements ReaderRepository {
-  LocalReaderRepository({required LocalBookStore store})
-      : _store = store;
+  LocalReaderRepository({
+    required LocalBookStore store,
+    InkProbe inkProbe = const PdfrxInkProbe(),
+  })  : _store = store,
+        _inkProbe = inkProbe;
 
   final LocalBookStore _store;
+  final InkProbe _inkProbe;
 
   // Tamaño objetivo de cada capítulo cuando no hay estructura natural.
   static const _targetWordsPerChapter = 3000;
@@ -89,6 +101,7 @@ class LocalReaderRepository implements ReaderRepository {
         wordCount: chapter.wordCount,
         text: chapter.text,
         words: _tokenize(chapter.text ?? ''),
+        blocks: chapter.blocks,
       ));
     } on _ReaderError catch (e) {
       return Left(e.toFailure());
@@ -233,16 +246,17 @@ class LocalReaderRepository implements ReaderRepository {
   }
 
   String _chaptersCachePathFor(String storedPath) {
-    // Para `/path/{id}.pdf` → `/path/{id}.chapters.v5.json`
+    // Para `/path/{id}.pdf` → `/path/{id}.chapters.v6.json`
     //
     // El sufijo de versión invalida las cachés de parsers anteriores.
     // v2 (2026-07-19): reflow de texto. v3 (2026-07-21): stripPdfNoise
     // (índice + encabezados/pies repetidos). v4 (2026-10-02): stripPdfNoise
     // deja de borrar los rótulos numerados en mayúsculas ("EJEMPLO 3").
     // v5 (2026-10-03): repairSurrogates (la 𝑥 de las fórmulas rompía el
-    // pintado). Subir esta versión al cambiar cualquier parser, o el fix no
-    // se ve en libros ya importados.
-    return '${chapterCacheBase(storedPath)}v5.json';
+    // pintado). v6 (2026-10-04): bloques tipados por maquetación en PDF y
+    // Markdown (ADR 13). Subir esta versión al cambiar cualquier parser, o el
+    // fix no se ve en libros ya importados.
+    return '${chapterCacheBase(storedPath)}v6.json';
   }
 
   // ---------- format parsers ----------
@@ -250,9 +264,28 @@ class LocalReaderRepository implements ReaderRepository {
   // Fuera del hilo de la interfaz: extraer cientos de páginas congelaba la
   // pantalla de carga, y con ella sus mensajes de espera, durante segundos.
   // `pdf_page_locator.dart` ya usa Syncfusion en un isolate del mismo modo.
-  Future<List<Chapter>> _parsePdf(File file) => compute(_parsePdfFile, file.path);
+  //
+  // La tinta de los huecos se comprueba después, en este isolate: PDFium no
+  // se puede usar desde el de `compute`, y pdfrx ya lo ejecuta en su propio
+  // isolate de trabajo, así que la interfaz tampoco se congela.
+  Future<List<Chapter>> _parsePdf(File file) async {
+    final analysis = await compute(_analyzePdfFile, file.path);
+    final layout = analysis.layout;
+    if (layout == null) return analysis.chapters;
 
-  static List<Chapter> _parsePdfFile(String path) {
+    final candidates = layout.figureCandidates;
+    var inks = const <PageRect?>[];
+    if (candidates.isNotEmpty) {
+      try {
+        inks = await _inkProbe.inkBounds(file.path, candidates);
+      } catch (_) {
+        // Sin poder pintar los huecos, mejor ninguna figura que inventarlas.
+      }
+    }
+    return _splitBlocksByWordCount(resolveFigureCandidates(layout, inks));
+  }
+
+  static _PdfAnalysis _analyzePdfFile(String path) {
     // PdfDocument carga todo el PDF en memoria. Para libros muy grandes
     // (>100MB) puede ser costoso, pero la API de syncfusion no soporta
     // streaming, así que es lo que hay.
@@ -261,6 +294,43 @@ class LocalReaderRepository implements ReaderRepository {
     try {
       final extractor = PdfTextExtractor(document);
       final pageCount = document.pages.count;
+
+      PdfLayout? layout;
+      try {
+        final fragments = <PdfTextFragment>[];
+        final sizes = <LayoutPageSize>[];
+        for (var i = 0; i < pageCount; i++) {
+          final size = document.pages[i].size;
+          sizes.add(LayoutPageSize(size.width, size.height));
+          fragments.addAll(fragmentsOf(
+            extractor.extractTextLines(startPageIndex: i, endPageIndex: i),
+          ));
+        }
+        final fixes = learnGlyphCodeFixes(
+          fragments,
+          (page) => extractor.extractText(
+            startPageIndex: page,
+            endPageIndex: page,
+          ),
+        );
+        layout = analyzePdfLayout(
+          fixes.isEmpty
+              ? fragments
+              : [
+                  for (final f in fragments)
+                    f.withText(applyGlyphCodeFixes(f.text, fixes)),
+                ],
+          sizes,
+        );
+      } catch (_) {
+        // Una página que el extractor de líneas no entiende manda el libro
+        // entero al plan B: mejor el texto plano completo que con huecos.
+        layout = null;
+      }
+      if (layout != null) return _PdfAnalysis(layout: layout);
+
+      // Plan B (escaneados, dos columnas, maquetaciones raras): el proceso de
+      // antes del ADR 13, intacto.
       final pages = <String>[];
       for (var i = 0; i < pageCount; i++) {
         // extractText() en una sola página es estable y rápido.
@@ -268,36 +338,111 @@ class LocalReaderRepository implements ReaderRepository {
         pages.add(repairSurrogates(pageText));
       }
       final fullText = stripPdfNoise(pages.join('\n\n'));
-      return _splitByWordCount(fullText);
+      return _PdfAnalysis(chapters: _splitByWordCount(fullText));
     } finally {
       document.dispose();
     }
   }
 
+  /// Convierte las líneas de Syncfusion en los fragmentos de [analyzePdfLayout].
+  ///
+  /// `repairSurrogates` va **por línea**: es donde el extractor mutila los
+  /// pares UTF-16 de la 𝑥 cursiva de las fórmulas.
+  @visibleForTesting
+  static List<PdfTextFragment> fragmentsOf(List<TextLine> lines) {
+    final fragments = <PdfTextFragment>[];
+    for (final line in lines) {
+      final text = repairSurrogates(_lineText(line));
+      if (text.isEmpty) continue;
+      var font = line.fontName;
+      var bold = line.fontStyle.contains(PdfFontStyle.bold);
+      var monoChars = 0;
+      var widest = 0;
+      for (final word in line.wordCollection) {
+        final chars = word.text.trim().length;
+        if (chars == 0) continue;
+        if (isMonospaceFont(word.fontName)) monoChars += chars;
+        // Con fuentes mezcladas la línea no trae nombre: manda la palabra
+        // más larga.
+        if (line.fontName.isEmpty && chars > widest) {
+          widest = chars;
+          font = word.fontName;
+          bold = word.fontStyle.contains(PdfFontStyle.bold);
+        }
+      }
+      final b = line.bounds;
+      fragments.add(PdfTextFragment(
+        page: line.pageIndex,
+        left: b.left,
+        top: b.top,
+        right: b.right,
+        bottom: b.bottom,
+        text: text,
+        font: font,
+        bold: bold || _boldFontName.hasMatch(font),
+        monoChars: monoChars,
+      ));
+    }
+    return fragments;
+  }
+
+  static final RegExp _boldFontName =
+      RegExp(r'bold|black|heavy|semibold|demi', caseSensitive: false);
+
+  /// Texto de una línea rehecho desde sus palabras.
+  ///
+  /// Syncfusion solo separa dos palabras si las distancia más de un punto.
+  /// La variable de una fórmula en línea va en otra fuente y pegada a la
+  /// palabra anterior, sin glifo de espacio: salía "subíndicex" y "dondek".
+  /// Un cambio de fuente entre dos palabras que empiezan y acaban en letra o
+  /// cifra también es una frontera de palabra.
+  static String _lineText(TextLine line) {
+    final words = line.wordCollection;
+    if (words.isEmpty) return line.text;
+    final sb = StringBuffer();
+    TextWord? prev;
+    for (final word in words) {
+      if (prev != null) {
+        final soFar = sb.toString();
+        final apart = (prev.bounds.right - word.bounds.left).abs() > 1;
+        final fontBoundary = word.fontName != prev.fontName &&
+            _endsInWord.hasMatch(prev.text) &&
+            _startsWord.hasMatch(word.text);
+        if ((apart || fontBoundary) &&
+            !soFar.endsWith(' ') &&
+            !word.text.startsWith(' ')) {
+          sb.write(' ');
+        }
+      }
+      sb.write(word.text);
+      prev = word;
+    }
+    return sb.toString();
+  }
+
+  static final RegExp _endsInWord = RegExp(r'[\p{L}\p{N}]$', unicode: true);
+  static final RegExp _startsWord =
+      RegExp(r'^[\p{L}\p{N}(“"«¿¡\[]', unicode: true);
+
   List<Chapter> _parseMarkdown(String content) {
-    // Si hay headers H1/H2, los usamos como cortes naturales.
-    final headerPattern = RegExp(r'^(#{1,2})\s+(.+)$', multiLine: true);
-    final matches = headerPattern.allMatches(content).toList();
-    if (matches.length < 2) {
+    final parsed = parseMarkdownBlocks(content);
+    // Si hay títulos H1/H2, los usamos como cortes naturales.
+    final cuts = <int>[
+      for (var i = 0; i < parsed.length; i++)
+        if (parsed[i].level == 1 || parsed[i].level == 2) i,
+    ];
+    if (cuts.length < 2) {
       // Sin estructura clara: dividimos por tamaño.
-      return _splitByWordCount(content);
+      return _splitBlocksByWordCount([for (final b in parsed) b.block]);
     }
 
     final chapters = <Chapter>[];
-    for (var i = 0; i < matches.length; i++) {
-      final start = matches[i].start;
-      final end = (i + 1 < matches.length) ? matches[i + 1].start : content.length;
-      final title = matches[i].group(2)?.trim() ?? 'Capítulo ${i + 1}';
-      final body = content.substring(start, end).trim();
-      final words = _tokenize(body);
-      chapters.add(Chapter(
-        id: _chapterId(i),
-        title: title,
-        orderIndex: i,
-        wordCount: words.length,
-        text: body,
-        words: words,
-      ));
+    for (var i = 0; i < cuts.length; i++) {
+      // Lo que precede al primer título va con el primer capítulo.
+      final start = i == 0 ? 0 : cuts[i];
+      final end = i + 1 < cuts.length ? cuts[i + 1] : parsed.length;
+      final blocks = [for (final b in parsed.sublist(start, end)) b.block];
+      chapters.add(_chapterOfBlocks(i, parsed[cuts[i]].block.text, blocks));
     }
     return chapters;
   }
@@ -540,6 +685,53 @@ class LocalReaderRepository implements ReaderRepository {
     return chapters;
   }
 
+  /// Igual que [_splitByWordCount], pero sobre bloques: corta solo entre
+  /// bloques, así que nunca parte un bloque de código ni una figura.
+  static List<Chapter> _splitBlocksByWordCount(List<ChapterBlock> blocks) {
+    final chapters = <Chapter>[];
+    final current = <ChapterBlock>[];
+    var currentWords = 0;
+
+    void flush() {
+      if (current.isEmpty) return;
+      final index = chapters.length;
+      chapters.add(_chapterOfBlocks(index, 'Sección ${index + 1}', current));
+      current.clear();
+      currentWords = 0;
+    }
+
+    for (final block in blocks) {
+      final wordCount = block.wordCount;
+      if (wordCount == 0) continue;
+      if (currentWords > 0 &&
+          currentWords + wordCount > _targetWordsPerChapter) {
+        flush();
+      }
+      current.add(block);
+      currentWords += wordCount;
+    }
+    flush();
+    return chapters;
+  }
+
+  static Chapter _chapterOfBlocks(
+    int index,
+    String title,
+    List<ChapterBlock> blocks,
+  ) {
+    final text = Chapter.textOfBlocks(blocks);
+    final words = _tokenize(text);
+    return Chapter(
+      id: _chapterId(index),
+      title: title,
+      orderIndex: index,
+      wordCount: words.length,
+      text: text,
+      words: words,
+      blocks: List.unmodifiable(blocks),
+    );
+  }
+
   // ---------- helpers ----------
 
   static String _chapterId(int index) =>
@@ -551,16 +743,29 @@ class LocalReaderRepository implements ReaderRepository {
       .where((w) => w.isNotEmpty)
       .toList(growable: false);
 
+  // Con bloques no se guarda `text`: es la unión de sus textos y duplicarlo
+  // doblaría el tamaño de la caché.
   Map<String, dynamic> _chapterToJson(Chapter c) => {
         'id': c.id,
         'title': c.title,
         'order_index': c.orderIndex,
         'word_count': c.wordCount,
-        'text': c.text,
+        if (c.blocks.isEmpty)
+          'text': c.text
+        else
+          'blocks': [for (final b in c.blocks) _blockToJson(b)],
       };
 
   Chapter _chapterFromJson(Map<String, dynamic> json) {
-    final text = json['text'] as String?;
+    final rawBlocks = json['blocks'];
+    final blocks = rawBlocks is List
+        ? [
+            for (final b in rawBlocks.whereType<Map<String, dynamic>>())
+              ?_blockFromJson(b),
+          ]
+        : const <ChapterBlock>[];
+    final text =
+        blocks.isEmpty ? json['text'] as String? : Chapter.textOfBlocks(blocks);
     return Chapter(
       id: json['id'] as String,
       title: (json['title'] as String?) ?? 'Sin título',
@@ -568,8 +773,52 @@ class LocalReaderRepository implements ReaderRepository {
       wordCount: (json['word_count'] as int?) ?? 0,
       text: text,
       words: text == null ? const [] : _tokenize(text),
+      blocks: blocks,
     );
   }
+
+  static Map<String, dynamic> _blockToJson(ChapterBlock b) => {
+        'k': b.kind.name,
+        't': b.text,
+        if (b.page != null) 'p': b.page,
+        if (b.rect != null)
+          'r': [b.rect!.left, b.rect!.top, b.rect!.right, b.rect!.bottom],
+        if (b.figureKind != null) 'f': b.figureKind!.name,
+        if (b.textHeight != null) 'h': b.textHeight,
+      };
+
+  static ChapterBlock? _blockFromJson(Map<String, dynamic> json) {
+    final kind = ChapterBlockKind.values.asNameMap()[json['k']];
+    final text = json['t'];
+    if (kind == null || text is! String) return null;
+    if (kind != ChapterBlockKind.figure) {
+      return ChapterBlock(kind: kind, text: text);
+    }
+    final page = json['p'];
+    final r = json['r'];
+    final figureKind = FigureKind.values.asNameMap()[json['f']];
+    if (page is! int || r is! List || r.length != 4 || figureKind == null) {
+      return null;
+    }
+    final coords = [for (final v in r) (v as num).toDouble()];
+    return ChapterBlock(
+      kind: kind,
+      text: text,
+      page: page,
+      rect: PageRect(coords[0], coords[1], coords[2], coords[3]),
+      figureKind: figureKind,
+      textHeight: (json['h'] as num?)?.toDouble(),
+    );
+  }
+}
+
+/// Resultado del isolate que lee el PDF: o la maquetación, que aún tiene que
+/// pasar por la comprobación de tinta, o los capítulos del plan B.
+class _PdfAnalysis {
+  const _PdfAnalysis({this.layout, this.chapters = const []});
+
+  final PdfLayout? layout;
+  final List<Chapter> chapters;
 }
 
 /// Excepción interna para propagar Failures desde helpers.
