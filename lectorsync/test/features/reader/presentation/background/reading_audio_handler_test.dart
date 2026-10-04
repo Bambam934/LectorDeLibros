@@ -20,7 +20,7 @@ void main() {
   late _FakeCommands commands;
 
   setUp(() {
-    handler = ReadingAudioHandler();
+    handler = ReadingAudioHandler(pauseGrace: const Duration(milliseconds: 50));
     commands = _FakeCommands();
   });
 
@@ -29,6 +29,38 @@ void main() {
         bookTitle: 'Cálculo integral',
         commands: commands,
       );
+
+  Future<void> afterGrace() =>
+      Future<void>.delayed(const Duration(milliseconds: 150));
+
+  /// Los estados que recibe audio_service desde ahora, en orden.
+  Future<List<PlaybackState>> Function() recordStates() {
+    final states = <PlaybackState>[];
+    final sub = handler.playbackState.listen(states.add);
+    return () async {
+      await Future<void>.delayed(Duration.zero);
+      await sub.cancel();
+      return states;
+    };
+  }
+
+  /// En Android, audio_service solo retira la notificación si en el mismo
+  /// estado sale de primer plano: `idle` tiene que llegar ya parado, y sin
+  /// una pausa intermedia, que la repinta y gana la carrera a la retirada.
+  void expectLeavesInOneStep(List<PlaybackState> states) {
+    final idle = states.indexWhere(
+      (s) => s.processingState == AudioProcessingState.idle,
+    );
+    expect(idle, greaterThan(0));
+    expect(states[idle].playing, isFalse, reason: 'idle llega ya parado');
+    expect(
+      states.take(idle).where(
+            (s) => s.processingState == AudioProcessingState.ready && !s.playing,
+          ),
+      isEmpty,
+      reason: 'sin pausa intermedia que repinte la notificación',
+    );
+  }
 
   test('al abrir un libro, la notificación lleva su título', () {
     attach();
@@ -54,14 +86,29 @@ void main() {
     expect(state.processingState, AudioProcessingState.ready);
   });
 
-  test('y que está en pausa, con el botón de reanudar', () async {
+  test('la parada de la voz se publica pasado el margen', () async {
     attach();
     await handler.reportPlaying(true);
     await handler.reportPlaying(false);
 
+    expect(handler.playbackState.value.playing, isTrue, reason: 'aún en margen');
+
+    await afterGrace();
     final state = handler.playbackState.value;
     expect(state.playing, isFalse);
     expect(state.controls.first, MediaControl.play);
+  });
+
+  test('un salto de capítulo no llega a publicar la pausa', () async {
+    // Con la pantalla apagada, publicarla sacaría al servicio de primer
+    // plano y Android ya no le dejaría volver para el capítulo siguiente.
+    attach();
+    await handler.reportPlaying(true);
+    await handler.reportPlaying(false);
+    await handler.reportPlaying(true);
+    await afterGrace();
+
+    expect(handler.playbackState.value.playing, isTrue);
   });
 
   test('los botones del sistema llegan al lector', () async {
@@ -72,13 +119,43 @@ void main() {
     expect(commands.calls, ['play', 'pause']);
   });
 
+  test('pausar desde la notificación es inmediato', () async {
+    attach();
+    await handler.reportPlaying(true);
+    await handler.pause();
+
+    expect(handler.playbackState.value.playing, isFalse);
+  });
+
+  test('reanudar desde la notificación publica al momento', () async {
+    // Android solo deja volver a primer plano poco después del botón.
+    attach();
+    await handler.play();
+
+    expect(handler.playbackState.value.playing, isTrue);
+
+    await handler.reportPlaying(true);
+    await afterGrace();
+    expect(handler.playbackState.value.playing, isTrue);
+  });
+
+  test('si tras el play la voz no llega a sonar, se deshace', () async {
+    attach();
+    await handler.play();
+    await afterGrace();
+
+    expect(handler.playbackState.value.playing, isFalse);
+  });
+
   test('el ✕ pausa la voz y retira la notificación', () async {
     attach();
     await handler.reportPlaying(true);
+    final states = recordStates();
     await handler.stop();
 
     expect(commands.calls, ['pause']);
     expect(handler.playbackState.value.processingState, AudioProcessingState.idle);
+    expectLeavesInOneStep(await states());
   });
 
   test('sin libro abierto, los botones no hacen nada', () async {
@@ -89,14 +166,27 @@ void main() {
     expect(handler.playbackState.value.playing, isFalse);
   });
 
-  test('cerrar el libro desconecta y retira la notificación', () async {
+  test('cerrar el libro con la voz sonando la desconecta y retira la '
+      'notificación', () async {
     attach();
     await handler.reportPlaying(true);
+    final states = recordStates();
     await handler.detach();
     await handler.play();
 
     expect(handler.isAttached, isFalse);
     expect(commands.calls, isEmpty);
+    expect(handler.playbackState.value.processingState, AudioProcessingState.idle);
+    expectLeavesInOneStep(await states());
+  });
+
+  test('cerrar el libro durante el margen no deja la pausa pendiente', () async {
+    attach();
+    await handler.reportPlaying(true);
+    await handler.reportPlaying(false);
+    await handler.detach();
+    await afterGrace();
+
     expect(handler.playbackState.value.processingState, AudioProcessingState.idle);
   });
 

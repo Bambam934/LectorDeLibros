@@ -370,10 +370,10 @@ Future<void> _registerBackgroundReading() async {
       config: const AudioServiceConfig(
         androidNotificationChannelId: 'com.lectorsync.lectorsync.reading',
         androidNotificationChannelName: 'Lectura en voz alta',
-        // En Android 12+ el servicio no puede volver a primer plano desde
-        // segundo plano, así que no sale de él al pausar: ver
-        // ReadingAudioHandler.
-        androidStopForegroundOnPause: false,
+        // Al pausar suelta el primer plano y el wakelock. El salto de
+        // capítulo con la pantalla apagada no llega a pausar gracias al
+        // margen de ReadingAudioHandler.
+        androidStopForegroundOnPause: true,
       ),
     );
     handler.bindInterruptions(
