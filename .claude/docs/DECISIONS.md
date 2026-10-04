@@ -135,7 +135,7 @@ Diseñado con `/diseñar` y aprobado por secciones. Dos funciones que comparten 
 
 Pendiente de verificar en dispositivo (no hay pruebas automáticas posibles): todo lo que toca el sistema —icono de No molestar, notificaciones silenciadas, voz audible con la regla puesta, lectura de más de 10 minutos con la pantalla apagada cruzando capítulos, controles de bloqueo y auriculares, pausa con llamadas y al desconectar los auriculares— y en Windows, entrar y salir de pantalla completa sin los fallos conocidos de `window_manager`.
 
-## 13. Bloques tipados por maquetación en los PDF offline (diseño aprobado 2026-10-03, pendiente de implementar)
+## 13. Bloques tipados por maquetación en los PDF offline (diseño aprobado 2026-10-03, implementado 2026-10-04, pendiente de verificar en el móvil)
 
 Reabre el §7, que evitó a propósito tocar la extracción, la entidad `Chapter` y la caché. Medido en los libros reales del usuario: en "Cálculo integral" las ecuaciones son dibujos vectoriales (página 136: huecos entre líneas sin texto ni imágenes; las fuentes matemáticas son el 1,5 % del texto) y la app se las salta sin avisar, mientras enmarca teléfonos como fórmulas. En "Ciencia de datos desde cero" el código va en LiberationMono (30 % de los caracteres) y su sangría se recupera por la posición.
 
@@ -146,3 +146,12 @@ Reabre el §7, que evitó a propósito tocar la extracción, la entidad `Chapter
 - **Voz**: el título con pausa; el código según el ajuste "Leer los bloques de código en voz alta" (por defecto avisa "Bloque de código." y lo salta); la figura dice "Fórmula." o "Figura.".
 - **Markdown**: las vallas pasan a bloques de código y los `###`, a títulos. **TXT**, como hoy, con una regla más para no tomar teléfonos por fórmulas.
 - **Descartados**: afinar las heurísticas de texto (no recuperan las ecuaciones vectoriales ni la sangría); un modo página (sin reflujo, inutilizable en el móvil; queda como posible complemento); el servidor y los EPUB ahora (pendientes con la fase 1 de contenido rico); copiar código, resaltado de sintaxis, código en línea en monoespaciada y capítulos por títulos (YAGNI).
+- **Implementación (2026-10-04)**: `data/parsing/pdf_layout.dart` (clasificador puro), `ink_probe.dart`, `markdown_blocks.dart`; `splitByBlocks` en `tts_segmentation.dart`; widgets en `reader_page.dart` y `pdf_crop_image.dart`. Hallado al medir los libros con Syncfusion, y resuelto sin cambiar el diseño:
+  - el extractor de líneas corta una línea visual cada vez que cambia la altura del glifo (código en línea, versalitas, exponentes): se reagrupan los trozos por solape vertical;
+  - en "Cálculo integral" `fontSize` vale 1,0: el tamaño sale de la altura del rectángulo;
+  - la variable en cursiva va pegada y en otra fuente ("subíndicex"): el cambio de fuente separa palabras, salvo en un exponente;
+  - los glifos que no traduce salen con su código decimal (la ligadura "fi" de Minion es "super31cie"), mientras `extractText` sí los traduce: se aprende la traducción cotejando con el texto plano las seis páginas con más palabras sospechosas, con la palabra vecina como contexto;
+  - el borde de un recuadro ("Nota:") tiene tinta: se exige tinta dentro de la caja, sin las filas que la cruzan ni sus columnas del borde;
+  - la cabecera se busca solo por encima de donde empieza el texto en una página típica, para no tomar por cabecera un "Ejercicio 2" al principio de varias páginas.
+- **Cambio respecto al diseño (no forzoso, pendiente del visto bueno del usuario)**: las fórmulas no se invierten en los temas oscuros y sepia, sino que toman el color del texto sobre fondo transparente en todas las paletas. En sepia, invertir pondría un recuadro negro sobre la página clara. Las figuras se pintan a la escala de la letra, no estiradas al ancho de la columna.
+- **Medido en el PC** (primera apertura): "Cálculo integral" 13,5 s de maquetación (lo mismo que costaba `extractText`) más 1,5 s de tinta, con 358 fórmulas y 132 figuras; "Ciencia de datos desde cero" 11,7 s más 1,3 s.

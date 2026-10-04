@@ -1,6 +1,6 @@
 # Plan: bloques tipados por maquetación en los PDF offline (ADR 13)
 
-*Diseño aprobado el 2026-10-03 con `/diseñar` (sesión 24), sección a sección. **Sin implementar.** Empezar en plan mode, a ser posible en una sesión nueva. Base: rama `desarrollo` en `800844f`, que ya incluye `repairSurrogates` y la caché v5.*
+*Diseño aprobado el 2026-10-03 con `/diseñar` (sesión 24), sección a sección. **Implementado el 2026-10-04** (`e8c0aff`, `a185f45`, `0e374d3`, `de8eea5`): pasos 1 a 8 y 10 hechos; **falta el paso 9, la verificación en el Pixel y en Windows**. Lo hallado al implementar está en el ADR 13.*
 
 ## Objetivo
 
