@@ -2885,12 +2885,22 @@ class _FigureBlockView extends StatelessWidget {
   /// de lo oscuro que es cada píxel. En vez de invertir la imagen en los temas
   /// oscuros, la fórmula queda del color del texto en cualquier paleta, sepia
   /// incluida, donde invertir pondría un recuadro negro sobre fondo claro.
-  static ColorFilter _inkFilter(Color ink) => ColorFilter.matrix(<double>[
-        0, 0, 0, 0, ink.r * 255, //
-        0, 0, 0, 0, ink.g * 255,
-        0, 0, 0, 0, ink.b * 255,
-        -0.299, -0.587, -0.114, 0, 255,
-      ]);
+  ///
+  /// La opacidad es `A·(1 − luminancia)` y el color, el de la tinta
+  /// multiplicado por esa opacidad, **sin columna de traslación**. Con una
+  /// constante ("255 menos la luminancia") lo transparente salía opaco:
+  /// Impeller filtra una capa más grande que la imagen y en el Pixel la
+  /// pantalla se cubría de un rectángulo del color del texto. Y como filtra
+  /// en color premultiplicado, el color tiene que ir ya multiplicado.
+  static ColorFilter _inkFilter(Color ink) {
+    final r = ink.r, g = ink.g, b = ink.b;
+    return ColorFilter.matrix(<double>[
+      -0.299 * r, -0.587 * r, -0.114 * r, r, 0, //
+      -0.299 * g, -0.587 * g, -0.114 * g, g, 0,
+      -0.299 * b, -0.587 * b, -0.114 * b, b, 0,
+      -0.299, -0.587, -0.114, 1, 0,
+    ]);
+  }
 }
 
 class _Sentence {
