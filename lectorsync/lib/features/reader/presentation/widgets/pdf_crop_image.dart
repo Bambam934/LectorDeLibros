@@ -43,12 +43,17 @@ class PdfCropCache {
       _images[key] = cached;
       return cached.clone();
     }
+    // El cuerpo con llaves no es estético: `() => _pending.remove(key)`
+    // devolvería este mismo futuro, que `whenComplete` esperaría, y el
+    // futuro se quedaría esperándose a sí mismo para siempre.
     final image = await (_pending[key] ??= _render(
       pdfPath,
       pageIndex,
       rect,
       pixelWidth,
-    ).whenComplete(() => _pending.remove(key)));
+    ).whenComplete(() {
+      _pending.remove(key);
+    }));
     if (image == null) return null;
     if (!_images.containsKey(key)) {
       _images[key] = image;
