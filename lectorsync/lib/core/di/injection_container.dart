@@ -179,7 +179,11 @@ Future<void> configureDependencies() async {
       ),
     );
   }
-  if (!sl.isRegistered<SyncStreamClient>()) {
+  // Solo con servidor. En offline arrancaba al iniciar sesión (el login local
+  // también autentica) y reintentaba conectar con un backend inexistente cada
+  // pocos segundos: ruido en el registro y, en el móvil, despertares y
+  // batería para nada. `app.dart` y el lector ya lo tratan como opcional.
+  if (!_kOfflineMode && !sl.isRegistered<SyncStreamClient>()) {
     sl.registerLazySingleton<SyncStreamClient>(
       () => createSyncStreamClient(
         baseUrlGetter: () => sl<ApiClient>().dio.options.baseUrl,
