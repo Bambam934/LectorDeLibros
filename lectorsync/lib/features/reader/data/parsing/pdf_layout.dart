@@ -32,6 +32,7 @@ class PdfTextFragment {
     required this.text,
     required this.font,
     this.bold = false,
+    this.italic = false,
     this.monoChars = 0,
   });
 
@@ -46,6 +47,11 @@ class PdfTextFragment {
   /// Nombre de la fuente dominante del trozo.
   final String font;
   final bool bold;
+
+  /// En cursiva. Syncfusion da a veces el mismo nombre de fuente a la
+  /// redonda y a la cursiva ("Minion"), y la variable de una fórmula en línea
+  /// solo se distingue por esto.
+  final bool italic;
 
   /// Caracteres visibles del trozo escritos en una fuente monoespaciada.
   final int monoChars;
@@ -64,8 +70,62 @@ class PdfTextFragment {
         text: newText,
         font: font,
         bold: bold,
+        italic: italic,
         monoChars: monoChars,
       );
+}
+
+/// Posición de un trozo respecto al texto que lo precede.
+enum ScriptPosition { normal, superscript, subscript }
+
+/// Si un trozo de altura [height] centrado en [center] es un exponente o un
+/// subíndice del texto de altura [baseHeight] centrado en [baseCenter]: más
+/// bajo y desplazado hacia arriba o hacia abajo. Las versalitas son más bajas
+/// pero comparten la línea base, y su centro apenas se mueve.
+ScriptPosition scriptPosition({
+  required double baseCenter,
+  required double baseHeight,
+  required double center,
+  required double height,
+}) {
+  if (baseHeight <= 0 || height >= 0.8 * baseHeight) {
+    return ScriptPosition.normal;
+  }
+  final shift = center - baseCenter;
+  if (shift < -0.15 * baseHeight) return ScriptPosition.superscript;
+  if (shift > 0.15 * baseHeight) return ScriptPosition.subscript;
+  return ScriptPosition.normal;
+}
+
+const _superscripts = {
+  '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', //
+  '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹',
+  '+': '⁺', '-': '⁻', '−': '⁻', 'n': 'ⁿ',
+};
+const _subscripts = {
+  '0': '₀', '1': '₁', '2': '₂', '3': '₃', '4': '₄', //
+  '5': '₅', '6': '₆', '7': '₇', '8': '₈', '9': '₉',
+  '+': '₊', '-': '₋', '−': '₋',
+};
+
+/// [text] escrito como exponente o subíndice Unicode ("2" → "²"), si todos
+/// sus caracteres tienen versión; si no, el texto tal cual. Así "x2" se ve
+/// "x²", como en el libro, y la voz puede leerlo "x al cuadrado".
+String scriptText(String text, ScriptPosition position) {
+  final table = switch (position) {
+    ScriptPosition.superscript => _superscripts,
+    ScriptPosition.subscript => _subscripts,
+    ScriptPosition.normal => null,
+  };
+  final trimmed = text.trim();
+  if (table == null || trimmed.isEmpty) return text;
+  final sb = StringBuffer();
+  for (final rune in trimmed.runes) {
+    final mapped = table[String.fromCharCode(rune)];
+    if (mapped == null) return text;
+    sb.write(mapped);
+  }
+  return sb.toString();
 }
 
 /// Tamaño de una página en puntos.
@@ -371,7 +431,24 @@ class _Line {
     final cw = mono ? charWidth : 0.0;
     final sb = StringBuffer();
     PdfTextFragment? prev;
+    // Último trozo de tamaño normal: la referencia para reconocer exponentes.
+    PdfTextFragment? base;
     for (final f in parts) {
+      if (prev != null && base != null && !mono && f.chars > 0) {
+        final script = scriptPosition(
+          baseCenter: (base.top + base.bottom) / 2,
+          baseHeight: base.height,
+          center: (f.top + f.bottom) / 2,
+          height: f.height,
+        );
+        if (script != ScriptPosition.normal &&
+            f.left - prev.right < 0.5 * base.height) {
+          // Un exponente va pegado a lo que modifica: "x" + "2" es "x²".
+          sb.write(scriptText(f.text, script));
+          prev = f;
+          continue;
+        }
+      }
       if (prev != null) {
         final gap = f.left - prev.right;
         final soFar = sb.toString();
@@ -388,6 +465,7 @@ class _Line {
       }
       sb.write(f.text);
       prev = f;
+      if (f.chars > 0) base = f;
     }
     final raw = sb.toString();
     text = mono ? raw.trim() : raw.replaceAll(_whitespace, ' ').trim();
@@ -398,10 +476,11 @@ final RegExp _endsInWord = RegExp(r'[\p{L}\p{N}]$', unicode: true);
 final RegExp _startsWord = RegExp(r'^[\p{L}\p{N}(“"«¿¡\[]', unicode: true);
 
 /// `true` si entre [prev] y [next] hay una frontera de palabra sin espacio:
-/// la variable en cursiva de una fórmula en línea va en otra fuente y pegada
-/// ("eje" + "x"). Un exponente o un subíndice, más bajos, sí van pegados.
+/// la variable en cursiva de una fórmula en línea va en otra fuente, o en la
+/// misma pero en cursiva, y pegada ("eje" + "x"). Un exponente o un
+/// subíndice, más bajos, sí van pegados.
 bool _fontBoundary(PdfTextFragment prev, PdfTextFragment next, String soFar) =>
-    prev.font != next.font &&
+    (prev.font != next.font || prev.italic != next.italic) &&
     next.height >= 0.8 * prev.height &&
     prev.height >= 0.8 * next.height &&
     _endsInWord.hasMatch(soFar) &&
@@ -594,6 +673,10 @@ final RegExp _tocLeader = RegExp(r'(\.\s?){5,}');
 final RegExp _pageNumber = RegExp(r'^[-–—\s]*(\d{1,4}|[ivxlcdm]{1,7})[-–—\s]*$',
     caseSensitive: false);
 final RegExp _digits = RegExp(r'\d+');
+final RegExp _caption = RegExp(
+  r'^(figura|fig\.?|tabla|gr[áa]fic[ao]|imagen|cuadro|ilustraci[óo]n)\s*\d',
+  caseSensitive: false,
+);
 
 /// Quita las cabeceras y los pies de página.
 ///
@@ -601,7 +684,15 @@ final RegExp _digits = RegExp(r'\d+');
 /// cuerpo en una página típica, o por debajo de donde acaba: así un
 /// "Ejercicio 2" al principio de una página no se confunde con la cabecera
 /// por repetirse en varias. Ahí se descarta lo que se repite, sin contar las
-/// cifras, en tres páginas o más, y los números de página sueltos.
+/// cifras, **a la misma altura** en tres páginas o más, y los números de
+/// página sueltos.
+///
+/// La misma altura importa: sin cifras, "Figura 39" y "Figura 55" son el
+/// mismo texto, y los pies de figura que caían bajo el texto se tomaban por
+/// pies de página (faltaban 15 de 78 en "Cálculo integral"). Una cabecera
+/// está siempre en el mismo sitio; un pie de figura, donde caiga la figura.
+/// Por si coinciden, un pie de figura ("Figura 12", "Tabla 3") nunca es una
+/// cabecera.
 Iterable<_Line> _withoutRunningHeads(List<_Line> lines, _BookProfile p) sync* {
   final margin = 0.25 * p.pitch;
   bool inZone(_Line l) =>
@@ -609,13 +700,17 @@ Iterable<_Line> _withoutRunningHeads(List<_Line> lines, _BookProfile p) sync* {
   String signature(_Line l) => '${fontFamily(l.font)}|${_quantize(l.size)}|'
       '${l.text.toLowerCase().replaceAll(_digits, '').replaceAll(_whitespace, ' ').trim()}';
 
-  final pagesBySignature = <String, Set<int>>{};
+  final bySignature = <String, List<_Line>>{};
   for (final l in lines) {
-    if (inZone(l)) (pagesBySignature[signature(l)] ??= {}).add(l.page);
+    if (inZone(l)) (bySignature[signature(l)] ??= []).add(l);
   }
   for (final l in lines) {
-    if (inZone(l)) {
-      final repeated = (pagesBySignature[signature(l)]?.length ?? 0) >= 3;
+    if (inZone(l) && !_caption.hasMatch(l.text)) {
+      final pagesAtSameHeight = {
+        for (final other in bySignature[signature(l)]!)
+          if ((other.unionTop - l.unionTop).abs() <= 2.5) other.page,
+      };
+      final repeated = pagesAtSameHeight.length >= 3;
       final folio = _pageNumber.hasMatch(l.text) &&
           l.size <= 1.2 * p.bodyHeight;
       if (repeated || folio) {

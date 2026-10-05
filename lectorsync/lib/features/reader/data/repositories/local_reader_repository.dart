@@ -1,7 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show compute, visibleForTesting;
+import 'package:flutter/foundation.dart'
+    show compute, debugPrint, visibleForTesting;
 import 'package:fpdart/fpdart.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
 
@@ -251,9 +252,10 @@ class LocalReaderRepository implements ReaderRepository {
     // deja de borrar los rótulos numerados en mayúsculas ("EJEMPLO 3").
     // v5 (2026-10-03): repairSurrogates (la 𝑥 de las fórmulas rompía el
     // pintado). v6 (2026-10-04): bloques tipados por maquetación en PDF y
-    // Markdown (ADR 13). Subir esta versión al cambiar cualquier parser, o el
-    // fix no se ve en libros ya importados.
-    return '${chapterCacheBase(storedPath)}v6.json';
+    // Markdown (ADR 13). v7 (2026-10-04): los pies de figura repetidos ya no
+    // se toman por pies de página. Subir esta versión al cambiar cualquier
+    // parser, o el fix no se ve en libros ya importados.
+    return '${chapterCacheBase(storedPath)}v7.json';
   }
 
   // ---------- format parsers ----------
@@ -266,18 +268,24 @@ class LocalReaderRepository implements ReaderRepository {
   // se puede usar desde el de `compute`, y pdfrx ya lo ejecuta en su propio
   // isolate de trabajo, así que la interfaz tampoco se congela.
   Future<List<Chapter>> _parsePdf(File file) async {
+    final watch = Stopwatch()..start();
     final analysis = await compute(_analyzePdfFile, file.path);
     final layout = analysis.layout;
+    debugPrint('[LocalReader] PDF leído en ${watch.elapsedMilliseconds} ms '
+        '(${layout == null ? 'plan B, texto plano' : 'por bloques'})');
     if (layout == null) return analysis.chapters;
 
     final candidates = layout.figureCandidates;
     var inks = const <PageRect?>[];
     if (candidates.isNotEmpty) {
+      watch.reset();
       try {
         inks = await _inkProbe.inkBounds(file.path, candidates);
       } catch (_) {
         // Sin poder pintar los huecos, mejor ninguna figura que inventarlas.
       }
+      debugPrint('[LocalReader] tinta de ${candidates.length} huecos en '
+          '${watch.elapsedMilliseconds} ms');
     }
     return _splitBlocksByWordCount(resolveFigureCandidates(layout, inks));
   }
@@ -353,6 +361,7 @@ class LocalReaderRepository implements ReaderRepository {
       if (text.isEmpty) continue;
       var font = line.fontName;
       var bold = line.fontStyle.contains(PdfFontStyle.bold);
+      var italic = line.fontStyle.contains(PdfFontStyle.italic);
       var monoChars = 0;
       var widest = 0;
       for (final word in line.wordCollection) {
@@ -365,6 +374,7 @@ class LocalReaderRepository implements ReaderRepository {
           widest = chars;
           font = word.fontName;
           bold = word.fontStyle.contains(PdfFontStyle.bold);
+          italic = _isItalic(word);
         }
       }
       final b = line.bounds;
@@ -377,6 +387,7 @@ class LocalReaderRepository implements ReaderRepository {
         text: text,
         font: font,
         bold: bold || _boldFontName.hasMatch(font),
+        italic: italic,
         monoChars: monoChars,
       ));
     }
@@ -389,20 +400,42 @@ class LocalReaderRepository implements ReaderRepository {
   /// Texto de una línea rehecho desde sus palabras.
   ///
   /// Syncfusion solo separa dos palabras si las distancia más de un punto.
-  /// La variable de una fórmula en línea va en otra fuente y pegada a la
-  /// palabra anterior, sin glifo de espacio: salía "subíndicex" y "dondek".
-  /// Un cambio de fuente entre dos palabras que empiezan y acaban en letra o
-  /// cifra también es una frontera de palabra.
+  /// La variable de una fórmula en línea va en otra fuente, o en cursiva con
+  /// el mismo nombre de fuente, y pegada a la palabra anterior, sin glifo de
+  /// espacio: salía "subíndicex", "dondek" y "dey=x". Un cambio de fuente o de
+  /// cursiva entre dos palabras que empiezan y acaban en letra o cifra también
+  /// es una frontera de palabra. Y un exponente va pegado a lo que modifica,
+  /// como superíndice si se puede: "y=x 2" pasa a "y=x²".
   static String _lineText(TextLine line) {
     final words = line.wordCollection;
     if (words.isEmpty) return line.text;
     final sb = StringBuffer();
     TextWord? prev;
+    TextWord? base;
     for (final word in words) {
+      final visible = word.text.trim().isNotEmpty;
+      if (visible && prev != null && base != null) {
+        final b = base.bounds;
+        final w = word.bounds;
+        final script = scriptPosition(
+          baseCenter: b.center.dy,
+          baseHeight: b.height,
+          center: w.center.dy,
+          height: w.height,
+        );
+        if (script != ScriptPosition.normal &&
+            w.left - prev.bounds.right < 0.5 * b.height) {
+          sb.write(scriptText(word.text, script));
+          prev = word;
+          continue;
+        }
+      }
       if (prev != null) {
         final soFar = sb.toString();
         final apart = (prev.bounds.right - word.bounds.left).abs() > 1;
-        final fontBoundary = word.fontName != prev.fontName &&
+        final styleChange = word.fontName != prev.fontName ||
+            _isItalic(word) != _isItalic(prev);
+        final fontBoundary = styleChange &&
             _endsInWord.hasMatch(prev.text) &&
             _startsWord.hasMatch(word.text);
         if ((apart || fontBoundary) &&
@@ -413,9 +446,13 @@ class LocalReaderRepository implements ReaderRepository {
       }
       sb.write(word.text);
       prev = word;
+      if (visible) base = word;
     }
     return sb.toString();
   }
+
+  static bool _isItalic(TextWord word) =>
+      word.fontStyle.contains(PdfFontStyle.italic);
 
   static final RegExp _endsInWord = RegExp(r'[\p{L}\p{N}]$', unicode: true);
   static final RegExp _startsWord =

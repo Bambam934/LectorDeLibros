@@ -21,6 +21,7 @@ PdfTextFragment _frag(
   String font = 'Minion',
   double size = 11,
   bool bold = false,
+  bool italic = false,
   bool mono = false,
 }) =>
     PdfTextFragment(
@@ -32,6 +33,7 @@ PdfTextFragment _frag(
       text: text,
       font: font,
       bold: bold,
+      italic: italic,
       monoChars: mono ? text.replaceAll(RegExp(r'\s'), '').length : 0,
     );
 
@@ -108,6 +110,26 @@ void main() {
       expect(text, isNot(contains('APLICACIONES')));
       expect(text, isNot(contains('135')));
       expect(text, contains('Texto del cuerpo'));
+    });
+
+    test('un pie de figura repetido bajo el texto no es un pie de página', () {
+      // Sin cifras, "Figura 38" y "Figura 42" son el mismo texto; los pies
+      // caen donde cae la figura, no a la misma altura en cada página.
+      final fragments = <PdfTextFragment>[
+        for (var page = 0; page < 3; page++) ...[
+          ..._filler(page),
+          _frag(page, 300 + page * 40, 'Figura ${38 + page}',
+              left: 180, size: 9),
+          _frag(page, 312 + page * 40, 'Gráfica del ejercicio ${page + 1}',
+              left: 150, size: 9),
+        ],
+      ];
+
+      final text = _blocks(fragments).map((b) => b.text).join(' ');
+
+      expect(text, contains('Figura 38'));
+      expect(text, contains('Figura 40'));
+      expect(text, contains('Gráfica del ejercicio 3'));
     });
 
     test('un rótulo al principio de varias páginas no es una cabecera', () {
@@ -241,9 +263,50 @@ void main() {
 
       expect(
         blocks.map((b) => b.text).join(' '),
-        contains('En donde el subíndice x significa que la curva es y = x2 '
+        contains('En donde el subíndice x significa que la curva es y = x² '
             'en el intervalo pedido.'),
       );
+    });
+
+    test('la cursiva con el mismo nombre de fuente también separa palabras',
+        () {
+      // "la rotación de y=x² alrededor del eje x." de "Cálculo integral":
+      // Syncfusion llama "Minion" a la redonda y a la cursiva.
+      PdfTextFragment part(String text, double left, double right,
+              {bool italic = false}) =>
+          _frag(0, 190, text, left: left, right: right, italic: italic);
+      final blocks = _blocks([
+        ..._filler(0, lines: 6),
+        part('la rotación de', 71, 130.9),
+        part('y=x', 130.9, 147.5, italic: true),
+        part(' alrededor del eje', 155.5, 228),
+        part('x', 228, 233, italic: true),
+        part('.', 233, 235.6),
+      ]);
+
+      expect(blocks.map((b) => b.text).join(' '),
+          contains('la rotación de y=x alrededor del eje x.'));
+    });
+  });
+
+  group('exponentes y subíndices', () {
+    test('se reconocen por la altura y el desplazamiento', () {
+      ScriptPosition at(double center, double height) => scriptPosition(
+          baseCenter: 221, baseHeight: 11, center: center, height: height);
+
+      expect(at(218.5, 6.4), ScriptPosition.superscript);
+      expect(at(224, 6.4), ScriptPosition.subscript);
+      // Versalitas: más bajas, pero sobre la misma línea base.
+      expect(at(221.5, 7.7), ScriptPosition.normal);
+      expect(at(218.5, 11), ScriptPosition.normal);
+    });
+
+    test('las cifras pasan a superíndice o subíndice Unicode', () {
+      expect(scriptText('2', ScriptPosition.superscript), '²');
+      expect(scriptText('-1', ScriptPosition.superscript), '⁻¹');
+      expect(scriptText('10', ScriptPosition.subscript), '₁₀');
+      // Sin versión Unicode, el texto tal cual.
+      expect(scriptText('ab', ScriptPosition.superscript), 'ab');
     });
   });
 
