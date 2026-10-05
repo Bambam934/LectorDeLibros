@@ -890,8 +890,13 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
                       curr.currentChapter != null) {
                     return true;
                   }
-                  if (curr.isTtsActive &&
-                      prev.currentWordIndex != curr.currentWordIndex) {
+                  // Al darle al play la vista va a donde empieza a leer, sin
+                  // esperar a que la voz cambie de párrafo.
+                  if (curr.isTtsActive && !prev.isTtsActive) return true;
+                  // Con voz o sin ella: mover la barra de posición, saltar a
+                  // un marcador o aceptar el progreso de otro dispositivo
+                  // también lleva la vista hasta la palabra.
+                  if (prev.currentWordIndex != curr.currentWordIndex) {
                     final prevPara = _findParagraphIndex(
                       prev.currentWordIndex,
                       _wordOffsets,
@@ -914,9 +919,22 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
                     _lastScrolledParagraphIndex = -1;
                     final oldCtrl = _scrollController;
                     setState(() {
-                      _scrollController = ScrollController();
+                      // Sin `keepScrollOffset`: el controlador nuevo recuperaba
+                      // de PageStorage el desplazamiento del capítulo anterior,
+                      // y el siguiente se abría a media pantalla.
+                      _scrollController =
+                          ScrollController(keepScrollOffset: false);
                     });
                     oldCtrl?.dispose();
+                    // Al abrir el libro, la palabra guardada puede quedar lejos
+                    // del principio del capítulo: la vista va hasta ella sin
+                    // esperar a que suene la voz.
+                    final target = state.currentWordIndex;
+                    if (target > 0) {
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        if (mounted) _scrollToParagraph(target);
+                      });
+                    }
                     return;
                   }
 
@@ -1830,7 +1848,11 @@ class _ReaderBodyState extends State<_ReaderBody> {
                         maxWidth: prefs.maxColumnWidth,
                       ),
                       child: ListView.builder(
-                        key: ValueKey(prefs.fontFamilyName),
+                        // Con el capítulo en la clave, cada capítulo estrena
+                        // posición de desplazamiento. Solo con el controlador
+                        // nuevo no bastaba: la posición nueva absorbe la vieja
+                        // y el capítulo siguiente se abría a media pantalla.
+                        key: ValueKey('${prefs.fontFamilyName}|${chapter.id}'),
                         controller: widget.scrollController,
                         padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
                         itemCount: paragraphs.length + 1,
@@ -2391,8 +2413,20 @@ class _ParagraphHighlightProxyState extends State<_ParagraphHighlightProxy> {
     });
   }
 
+  /// Una "oración" que solo es un número o una abreviatura ("1.", "a.",
+  /// "Fig.", "pág.") no va aparte: el "1." de una lista numerada quedaba en
+  /// una línea suelta y el resto del elemento debajo.
+  static final _shortStop = RegExp(r'^(\d{1,3}|[a-zA-ZáéíóúñÁÉÍÓÚÑ]{1,4})\.$');
+
   List<_Sentence> _splitSentences() {
-    final parts = widget.paragraph.split(_sentenceEnd);
+    final parts = <String>[];
+    for (final part in widget.paragraph.split(_sentenceEnd)) {
+      if (parts.isNotEmpty && _shortStop.hasMatch(parts.last.trim())) {
+        parts[parts.length - 1] = '${parts.last} $part';
+      } else {
+        parts.add(part);
+      }
+    }
     final sentences = <_Sentence>[];
     int wordCursor = widget.startWordIndex;
     for (final part in parts) {
@@ -2545,20 +2579,20 @@ class _ParagraphHighlightProxyState extends State<_ParagraphHighlightProxy> {
                     color: i == activeIdx ? highlight : Colors.transparent,
                     borderRadius: BorderRadius.circular(6),
                   ),
+                  // La sangría va dentro del texto, como un hueco al principio:
+                  // en una fila con el texto al lado se sangraba la oración
+                  // entera, y un párrafo de una sola oración salía desplazado
+                  // de arriba abajo.
                   child: i == 0 && indentWidth > 0
-                      ? Row(
-                          crossAxisAlignment: CrossAxisAlignment.baseline,
-                          textBaseline: TextBaseline.alphabetic,
-                          children: [
-                            SizedBox(width: indentWidth),
-                            Expanded(
-                              child: Text(
-                                _sentences[i].text,
-                                textAlign: textAlign,
-                                style: textStyle,
-                              ),
-                            ),
-                          ],
+                      ? Text.rich(
+                          TextSpan(
+                            children: [
+                              WidgetSpan(child: SizedBox(width: indentWidth)),
+                              TextSpan(text: _sentences[i].text),
+                            ],
+                          ),
+                          textAlign: textAlign,
+                          style: textStyle,
                         )
                       : Text(
                           _sentences[i].text,
