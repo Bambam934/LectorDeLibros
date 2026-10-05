@@ -119,16 +119,13 @@ class LocalReaderRepository implements ReaderRepository {
     try {
       final chapters = await _loadOrParseChapters(bookId);
       final totalWords = chapters.fold<int>(0, (sum, c) => sum + c.wordCount);
-      // Cálculo simple de % completado: palabras leídas hasta este chapter
-      // más el wordIndex dentro del actual.
-      var wordsBefore = 0;
-      for (final c in chapters) {
-        if (c.id == chapterId) break;
-        wordsBefore += c.wordCount;
-      }
+      // `wordIndex` llega ya contado desde el principio del libro: el lector
+      // le suma los capítulos anteriores, igual que lo espera el servidor
+      // (`routes/reader.ts`). Antes se le volvían a sumar aquí y la biblioteca
+      // inflaba el porcentaje: un libro por el 42 % salía al 82 %.
       final progress = totalWords == 0
           ? 0.0
-          : ((wordsBefore + wordIndex) / totalWords).clamp(0.0, 1.0);
+          : (wordIndex / totalWords).clamp(0.0, 1.0);
 
       await _store.updateBookProgress(
         bookId: bookId,

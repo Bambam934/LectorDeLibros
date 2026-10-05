@@ -14,6 +14,8 @@ class _FakeStore implements LocalBookStore {
 
   final Map<String, String> paths;
   int? totalChapters;
+  double? progress;
+  int? progressWordIndex;
 
   @override
   Future<String?> resolveStoredPath(String bookId) async => paths[bookId];
@@ -28,6 +30,8 @@ class _FakeStore implements LocalBookStore {
     int? progressWordIndex,
   }) async {
     this.totalChapters = totalChapters ?? this.totalChapters;
+    this.progress = progress ?? this.progress;
+    this.progressWordIndex = progressWordIndex ?? this.progressWordIndex;
   }
 }
 
@@ -225,6 +229,29 @@ void main() {
     expect(cached.blocks, parsed.blocks);
     expect(cached.words, parsed.words);
     expect(fresh.map((c) => c.title), ['Uno', 'Dos']);
+  });
+
+  test('el progreso es la palabra global entre el total, sin volver a sumar '
+      'los capítulos anteriores', () async {
+    final stored = '${dir.path}${sep}dos.md';
+    // Dos capítulos de 4 y 6 palabras.
+    await File(stored).writeAsString('# Uno\nuna dos tres\n# Dos\ncuatro '
+        'cinco seis siete ocho\n');
+    final store = _FakeStore({'dos': stored});
+    final repo = LocalReaderRepository(store: store);
+    final chapters =
+        (await repo.getChapters('dos')).getOrElse((f) => fail(f.message));
+    expect(chapters.map((c) => c.wordCount), [4, 6]);
+
+    // El lector manda la palabra 7 del libro, la tercera del capítulo 2.
+    await repo.saveProgress(
+      bookId: 'dos',
+      chapterId: chapters[1].id,
+      wordIndex: 7,
+    );
+
+    expect(store.progress, closeTo(0.7, 1e-9));
+    expect(store.progressWordIndex, 7);
   });
 
   test('abre un TXT guardado como ANSI de Windows', () async {
