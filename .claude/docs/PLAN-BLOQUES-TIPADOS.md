@@ -1,6 +1,6 @@
 # Plan: bloques tipados por maquetación en los PDF offline (ADR 13)
 
-*Diseño aprobado el 2026-10-03 con `/diseñar` (sesión 24), sección a sección. **Implementado el 2026-10-04** (`e8c0aff`, `a185f45`, `0e374d3`, `de8eea5`): pasos 1 a 8 y 10 hechos; **falta el paso 9, la verificación en el Pixel y en Windows**. Lo hallado al implementar está en el ADR 13.*
+*Diseño aprobado el 2026-10-03 con `/diseñar` (sesión 24), sección a sección. **Implementado el 2026-10-04** (`e8c0aff`, `a185f45`, `0e374d3`, `de8eea5`): pasos 1 a 10 hechos. Verificado en el Pixel el mismo día, con siete arreglos (`add07e2`..`4d3bf5a`); falta el ajuste de leer el código y una prueba más larga en Windows. Lo hallado al implementar y al verificar está en el ADR 13.*
 
 ## Objetivo
 

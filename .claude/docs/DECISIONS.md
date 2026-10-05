@@ -135,7 +135,7 @@ Diseñado con `/diseñar` y aprobado por secciones. Dos funciones que comparten 
 
 Pendiente de verificar en dispositivo (no hay pruebas automáticas posibles): todo lo que toca el sistema —icono de No molestar, notificaciones silenciadas, voz audible con la regla puesta, lectura de más de 10 minutos con la pantalla apagada cruzando capítulos, controles de bloqueo y auriculares, pausa con llamadas y al desconectar los auriculares— y en Windows, entrar y salir de pantalla completa sin los fallos conocidos de `window_manager`.
 
-## 13. Bloques tipados por maquetación en los PDF offline (diseño aprobado 2026-10-03, implementado 2026-10-04, pendiente de verificar en el móvil)
+## 13. Bloques tipados por maquetación en los PDF offline (diseño aprobado 2026-10-03, implementado y verificado en el Pixel 2026-10-04)
 
 Reabre el §7, que evitó a propósito tocar la extracción, la entidad `Chapter` y la caché. Medido en los libros reales del usuario: en "Cálculo integral" las ecuaciones son dibujos vectoriales (página 136: huecos entre líneas sin texto ni imágenes; las fuentes matemáticas son el 1,5 % del texto) y la app se las salta sin avisar, mientras enmarca teléfonos como fórmulas. En "Ciencia de datos desde cero" el código va en LiberationMono (30 % de los caracteres) y su sangría se recupera por la posición.
 
@@ -155,3 +155,11 @@ Reabre el §7, que evitó a propósito tocar la extracción, la entidad `Chapter
   - la cabecera se busca solo por encima de donde empieza el texto en una página típica, para no tomar por cabecera un "Ejercicio 2" al principio de varias páginas.
 - **Cambio respecto al diseño (no forzoso, pendiente del visto bueno del usuario)**: las fórmulas no se invierten en los temas oscuros y sepia, sino que toman el color del texto sobre fondo transparente en todas las paletas. En sepia, invertir pondría un recuadro negro sobre la página clara. Las figuras se pintan a la escala de la letra, no estiradas al ancho de la columna.
 - **Medido en el PC** (primera apertura): "Cálculo integral" 13,5 s de maquetación (lo mismo que costaba `extractText`) más 1,5 s de tinta, con 358 fórmulas y 132 figuras; "Ciencia de datos desde cero" 11,7 s más 1,3 s.
+- **Verificado en el Pixel 10 Pro XL (2026-10-04)**: la página 136 con sus tres fórmulas recortadas y anunciadas ("Fórmula."), los títulos con su pausa, el código en monoespaciada con la sangría por niveles y "Bloque de código.", las figuras con "Figura.", los temas claro y oscuro, y la primera apertura sin congelar la pantalla (37 s el de cálculo y 30 s el de Python, en versión de depuración). Falta probar el ajuste de leer el código en los dos sentidos.
+- **Corregido al verificar**, sin cambiar el diseño:
+  - el recorte se esperaba a sí mismo (`whenComplete(() => map.remove(k))` devuelve el propio futuro) y las figuras salían en blanco (`add07e2`);
+  - el filtro de color con columna de traslación volvía opaco lo transparente y, como Impeller filtra una capa mayor que la imagen, cubría la pantalla (`52cb880`);
+  - los pies de figura que caían bajo el texto se tomaban por pies de página; una cabecera tiene que repetirse a la misma altura (`821593a`);
+  - Syncfusion llama igual a la redonda y a la cursiva, así que la cursiva también separa palabras, y los exponentes pasan a superíndice Unicode ("y=x²") (`821593a`);
+  - solo hay fórmulas en libros con señal matemática (fuente Symbol o Cambria Math, o signos), el hueco se mide con la letra más alta (una capitular daba una figura falsa) y un solape entre palabras no es un espacio ("1 1") (`4d3bf5a`, caché v8);
+  - en la pantalla, la sangría va solo en la primera línea, el "1." de una lista no va aparte y la vista va a la palabra al abrir, al darle al play y al pasar de capítulo (`e2ae3f8`).
