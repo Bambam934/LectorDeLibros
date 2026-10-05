@@ -81,6 +81,12 @@ Uint8List _technicalPdf() {
         40, y);
     y += 15;
   }
+  // Señal de que el libro es de matemáticas: un tramo en la fuente Symbol
+  // dentro de una línea de prosa. Sin ella, la figura baja sería "Figura".
+  final symbol = PdfStandardFont(PdfFontFamily.symbol, 12);
+  y -= 15;
+  graphics.drawString('abcdefghijklmnopqrstuvwxy', symbol,
+      bounds: Rect.fromLTWH(360, y, 200, 16));
   // Hueco con tinta: una ecuación dibujada, no escrita.
   y += 15;
   graphics.drawRectangle(
@@ -138,13 +144,13 @@ void main() {
     await dir.delete(recursive: true);
   });
 
-  test('abre un PDF, lo cachea en v7 y borra la caché de la versión vieja',
+  test('abre un PDF, lo cachea en v8 y borra la caché de la versión vieja',
       () async {
     final stored = '${dir.path}${sep}libro.pdf';
     await File(stored).writeAsBytes(
       _pdfWith(['Primera pagina del libro.', 'Segunda pagina del libro.']),
     );
-    final stale = File('${dir.path}${sep}libro.chapters.v6.json');
+    final stale = File('${dir.path}${sep}libro.chapters.v7.json');
     await stale.writeAsString('[]');
     final store = _FakeStore({'libro': stored});
 
@@ -153,7 +159,7 @@ void main() {
     final chapters = result.getOrElse((f) => fail('falló: ${f.message}'));
     expect(chapters, isNotEmpty);
     expect(store.totalChapters, chapters.length);
-    expect(File('${dir.path}${sep}libro.chapters.v7.json').existsSync(), isTrue);
+    expect(File('${dir.path}${sep}libro.chapters.v8.json').existsSync(), isTrue);
     expect(stale.existsSync(), isFalse);
 
     final chapter = await LocalReaderRepository(store: store)

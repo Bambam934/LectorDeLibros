@@ -34,6 +34,7 @@ class PdfTextFragment {
     this.bold = false,
     this.italic = false,
     this.monoChars = 0,
+    this.mathChars = 0,
   });
 
   /// Página, base 0.
@@ -56,6 +57,10 @@ class PdfTextFragment {
   /// Caracteres visibles del trozo escritos en una fuente monoespaciada.
   final int monoChars;
 
+  /// Caracteres del trozo en una fuente matemática (Symbol, Cambria Math…)
+  /// o que son signos matemáticos (∫, √, ≤…).
+  final int mathChars;
+
   double get height => bottom - top;
 
   /// Caracteres visibles (sin espacio en blanco).
@@ -72,8 +77,19 @@ class PdfTextFragment {
         bold: bold,
         italic: italic,
         monoChars: monoChars,
+        mathChars: mathChars,
       );
 }
+
+final RegExp _mathFont =
+    RegExp(r'math|symbol|cmmi|cmsy|cmex|stix|euler|mtextra', caseSensitive: false);
+final RegExp _mathSymbol = RegExp(r'[∫∑∏√±∞∂∆∇≤≥≠≈≡∈∉⊂⊆∪∩∀∃→⇒⇔×÷α-ωΑ-Ω]');
+
+/// Caracteres "matemáticos" de una palabra en la fuente [fontName]: todos si
+/// la fuente es matemática; si no, los signos matemáticos que lleve.
+int mathCharsOf(String text, String fontName) => _mathFont.hasMatch(fontName)
+    ? text.trim().length
+    : _mathSymbol.allMatches(text).length;
 
 /// Posición de un trozo respecto al texto que lo precede.
 enum ScriptPosition { normal, superscript, subscript }
@@ -142,6 +158,7 @@ class PdfLayout {
     required this.blocks,
     required this.bodyHeight,
     required this.pitch,
+    this.allowFormulas = true,
   });
 
   /// Bloques en orden de lectura. Los de tipo figura son **candidatos**: hay
@@ -153,6 +170,11 @@ class PdfLayout {
 
   /// Interlineado del cuerpo, en puntos.
   final double pitch;
+
+  /// Si una figura baja puede ser una fórmula. Solo en libros con alguna
+  /// señal matemática: en uno de prosa, el banner de una web o una viñeta
+  /// pequeña salían como "Fórmula." en la voz.
+  final bool allowFormulas;
 
   /// Zonas que hay que pintar para saber si tienen tinta, en el orden en que
   /// [resolveFigureCandidates] espera la respuesta.
@@ -207,6 +229,11 @@ const double _kFormulaMaxPitches = 4;
 /// tinta, en puntos.
 const double _kInkPadding = 3;
 
+/// Caracteres matemáticos (fuente matemática o signos) a partir de los que un
+/// libro se considera de matemáticas. Medido: "Cálculo integral" 226, "Ciencia
+/// de datos desde cero" 89, "De animales a dioses" 0.
+const int _kMinMathChars = 20;
+
 /// Divide un libro en bloques tipados a partir de sus líneas.
 ///
 /// Devuelve `null` cuando el libro no tiene una fuente de cuerpo clara o
@@ -242,6 +269,8 @@ PdfLayout? analyzePdfLayout(
     blocks: _assemble(kept, profile, pages, dropped),
     bodyHeight: profile.bodyHeight,
     pitch: profile.pitch,
+    allowFormulas:
+        fragments.fold(0, (sum, f) => sum + f.mathChars) >= _kMinMathChars,
   );
 }
 
@@ -364,7 +393,8 @@ List<ChapterBlock> resolveFigureCandidates(
     out.add(ChapterBlock.figure(
       page: block.page!,
       rect: rect,
-      figureKind: rect.height <= _kFormulaMaxPitches * layout.pitch
+      figureKind: layout.allowFormulas &&
+              rect.height <= _kFormulaMaxPitches * layout.pitch
           ? FigureKind.formula
           : FigureKind.figure,
       textHeight: layout.bodyHeight,
@@ -811,9 +841,12 @@ List<ChapterBlock> _assemble(
     final kind = kinds[i];
 
     var gapBreak = false;
-    if (prev != null && prev.page == l.page && l.top > prev.bottom) {
-      final gapTop = prev.bottom;
-      final gapBottom = l.top;
+    // El hueco va de la letra más baja de una línea a la más alta de la
+    // siguiente: con las métricas del trozo dominante, las letras grandes de
+    // un título o una capitular quedaban dentro y contaban como tinta.
+    if (prev != null && prev.page == l.page && l.unionTop > prev.unionBottom) {
+      final gapTop = prev.unionBottom;
+      final gapBottom = l.unionTop;
       if (gapBottom - gapTop >= _kGapFactor * p.bodyHeight &&
           !_coversDropped(dropped[l.page], gapTop, gapBottom)) {
         flush();

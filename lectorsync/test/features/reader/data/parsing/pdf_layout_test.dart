@@ -23,6 +23,7 @@ PdfTextFragment _frag(
   bool bold = false,
   bool italic = false,
   bool mono = false,
+  int mathChars = 0,
 }) =>
     PdfTextFragment(
       page: page,
@@ -35,6 +36,7 @@ PdfTextFragment _frag(
       bold: bold,
       italic: italic,
       monoChars: mono ? text.replaceAll(RegExp(r'\s'), '').length : 0,
+      mathChars: mathChars,
     );
 
 /// Una línea de cuerpo justificada, de margen a margen.
@@ -312,11 +314,13 @@ void main() {
 
   group('figuras', () {
     // Cinco líneas de relleno (la última en 153,3) y la frase que presenta la
-    // ecuación pegada a ellas, en 166,8 y 180,3.
-    List<PdfTextFragment> pageWithGap() => [
+    // ecuación pegada a ellas, en 166,8 y 180,3. Sus signos (fuente Symbol)
+    // son la señal de que el libro es de matemáticas.
+    List<PdfTextFragment> pageWithGap({int mathChars = 30}) => [
           ..._filler(0, lines: 5),
           _body(0, 166.8, 'En Física se estudió que el trabajo es:', left: 99),
-          _body(0, 180.3, 'cuerpo está dado por la expresión siguiente:'),
+          _frag(0, 180.3, 'cuerpo está dado por la expresión siguiente:',
+              right: 382.7, mathChars: mathChars),
           // Hueco de 28,4 pt: la ecuación vectorial que el texto no tiene.
           _body(0, 219.7, 'En los problemas que hasta ahora se resolvieron',
               left: 99),
@@ -347,6 +351,40 @@ void main() {
       final blank = resolveFigureCandidates(layout, const [null]);
       expect(blank.where((b) => b.kind == ChapterBlockKind.figure), isEmpty);
       expect(blank.length, inked.length - 1);
+    });
+
+    test('en un libro sin matemáticas, una imagen baja es una figura', () {
+      // "De animales a dioses": el banner de una web, de 42 pt de alto,
+      // salía como "Fórmula.".
+      final layout = analyzePdfLayout(pageWithGap(mathChars: 0), _pages)!;
+
+      final blocks = resolveFigureCandidates(
+          layout, const [PageRect(150, 197, 300, 215)]);
+
+      expect(layout.allowFormulas, isFalse);
+      expect(
+        blocks.singleWhere((b) => b.kind == ChapterBlockKind.figure).figureKind,
+        FigureKind.figure,
+      );
+    });
+
+    test('una capitular no deja un hueco falso sobre su línea', () {
+      // La "H" grande de "Hace unos 13.500 millones de años…" sube por encima
+      // de la línea a la que pertenece: medido desde el texto normal, el
+      // hueco tenía tinta (la capitular) y salía una figura falsa.
+      // Relleno hasta 164,3; la capitular empieza en 170 y el texto de su
+      // línea, en 190: medido desde el texto quedaba un hueco de 25,7 pt.
+      final layout = analyzePdfLayout([
+        ..._filler(0, lines: 5),
+        _frag(0, 170, 'H', left: 71, right: 95, size: 30),
+        _frag(0, 190, 'ace unos 13.500 millones de años, la materia',
+            left: 95, right: 382.7),
+        ..._filler(0, from: 203.5, lines: 5),
+      ], _pages)!;
+
+      expect(layout.figureCandidates, isEmpty);
+      expect(layout.blocks.map((b) => b.text).join(' '),
+          contains('Hace unos 13.500 millones de años'));
     });
 
     test('un filete decorativo no es una fórmula', () {

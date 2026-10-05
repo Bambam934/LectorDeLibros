@@ -253,9 +253,11 @@ class LocalReaderRepository implements ReaderRepository {
     // v5 (2026-10-03): repairSurrogates (la 𝑥 de las fórmulas rompía el
     // pintado). v6 (2026-10-04): bloques tipados por maquetación en PDF y
     // Markdown (ADR 13). v7 (2026-10-04): los pies de figura repetidos ya no
-    // se toman por pies de página. Subir esta versión al cambiar cualquier
-    // parser, o el fix no se ve en libros ya importados.
-    return '${chapterCacheBase(storedPath)}v7.json';
+    // se toman por pies de página. v8 (2026-10-04): fórmulas solo en libros
+    // con matemáticas, huecos medidos con la letra más alta y sin espacios
+    // por solapes ("1 1"). Subir esta versión al cambiar cualquier parser, o
+    // el fix no se ve en libros ya importados.
+    return '${chapterCacheBase(storedPath)}v8.json';
   }
 
   // ---------- format parsers ----------
@@ -363,11 +365,13 @@ class LocalReaderRepository implements ReaderRepository {
       var bold = line.fontStyle.contains(PdfFontStyle.bold);
       var italic = line.fontStyle.contains(PdfFontStyle.italic);
       var monoChars = 0;
+      var mathChars = 0;
       var widest = 0;
       for (final word in line.wordCollection) {
         final chars = word.text.trim().length;
         if (chars == 0) continue;
         if (isMonospaceFont(word.fontName)) monoChars += chars;
+        mathChars += mathCharsOf(word.text, word.fontName);
         // Con fuentes mezcladas la línea no trae nombre: manda la palabra
         // más larga.
         if (line.fontName.isEmpty && chars > widest) {
@@ -389,6 +393,7 @@ class LocalReaderRepository implements ReaderRepository {
         bold: bold || _boldFontName.hasMatch(font),
         italic: italic,
         monoChars: monoChars,
+        mathChars: mathChars,
       ));
     }
     return fragments;
@@ -432,7 +437,13 @@ class LocalReaderRepository implements ReaderRepository {
       }
       if (prev != null) {
         final soFar = sb.toString();
-        final apart = (prev.bounds.right - word.bounds.left).abs() > 1;
+        // Solo un hueco de verdad separa palabras. Syncfusion usa el valor
+        // absoluto y un solape por el ajuste de espaciado también contaba:
+        // el capítulo "11" en letra grande salía "1 1". Una palabra que
+        // empieza antes que la anterior sí es otra (texto de derecha a
+        // izquierda).
+        final apart = word.bounds.left - prev.bounds.right > 1 ||
+            word.bounds.left < prev.bounds.left - 1;
         final styleChange = word.fontName != prev.fontName ||
             _isItalic(word) != _isItalic(prev);
         final fontBoundary = styleChange &&
