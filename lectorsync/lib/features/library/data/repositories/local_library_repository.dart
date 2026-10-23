@@ -25,6 +25,10 @@ import '../../domain/repositories/library_repository.dart';
 class LocalLibraryRepository implements LibraryRepository, LocalBookStore {
   LocalLibraryRepository({Uuid? uuid}) : _uuid = uuid ?? const Uuid();
 
+  /// Tamaño máximo de un libro importado: 50 MiB, el mismo límite que el
+  /// backend (V-12, `fileSize` en `backend/src/app.ts`).
+  static const maxImportBytes = 50 * 1024 * 1024;
+
   static const _prefsKey = 'local_library_books_v1';
   static const _booksDirName = 'lectorsync_books';
 
@@ -52,6 +56,11 @@ class LocalLibraryRepository implements LibraryRepository, LocalBookStore {
       if (format == null) {
         return Left(FileFailure(
           'Formato no soportado. Usa PDF, TXT, MD o EPUB.',
+        ));
+      }
+      if (bytes.length > maxImportBytes) {
+        return Left(FileFailure(
+          'El archivo pesa más de 50 MB, el máximo para importar.',
         ));
       }
 
