@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../../../core/constants/import_limits.dart';
 import '../../../../core/errors/failures.dart';
 import '../../../../core/storage/chapter_cache_files.dart';
 import '../../../../core/storage/local_book_store.dart';
@@ -27,7 +28,7 @@ class LocalLibraryRepository implements LibraryRepository, LocalBookStore {
 
   /// Tamaño máximo de un libro importado: 50 MiB, el mismo límite que el
   /// backend (V-12, `fileSize` en `backend/src/app.ts`).
-  static const maxImportBytes = 50 * 1024 * 1024;
+  static const maxImportBytes = kMaxImportBytes;
 
   static const _prefsKey = 'local_library_books_v1';
   static const _booksDirName = 'lectorsync_books';

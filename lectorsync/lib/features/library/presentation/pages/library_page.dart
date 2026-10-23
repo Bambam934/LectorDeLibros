@@ -1,4 +1,5 @@
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
@@ -18,6 +19,7 @@ import '../bloc/library_state.dart';
 import '../widgets/book_card.dart';
 import '../widgets/global_search_delegate.dart';
 import '../widgets/onboarding_overlay.dart';
+import '../utils/picked_book_reader.dart';
 
 class LibraryPage extends StatelessWidget {
   const LibraryPage({super.key});
@@ -68,28 +70,43 @@ class _LibraryViewState extends State<_LibraryView> {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['epub', 'pdf', 'txt', 'md'],
-      withData: true,
+      withData: false,
+      withReadStream: true,
     );
 
     if (result == null || result.files.isEmpty) return;
     final picked = result.files.single;
-    final bytes = picked.bytes;
+    final readResult = await readPickedBook(picked);
 
-    if (bytes == null) {
-      if (context.mounted) {
+    if (!kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.android ||
+            defaultTargetPlatform == TargetPlatform.iOS)) {
+      try {
+        await FilePicker.platform.clearTemporaryFiles();
+      } catch (_) {}
+    }
+
+    if (!context.mounted) return;
+
+    switch (readResult) {
+      case PickedBookTooLarge():
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'El archivo pesa más de 50 MB, el máximo para importar.',
+            ),
+          ),
+        );
+      case PickedBookUnreadable():
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('No se pudo leer el archivo seleccionado.'),
           ),
         );
-      }
-      return;
-    }
-
-    if (context.mounted) {
-      context.read<LibraryBloc>().add(
-            LibraryBookImported(filename: picked.name, bytes: bytes),
-          );
+      case PickedBookBytes(:final bytes):
+        context.read<LibraryBloc>().add(
+              LibraryBookImported(filename: picked.name, bytes: bytes),
+            );
     }
   }
 
