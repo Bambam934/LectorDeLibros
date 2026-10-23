@@ -78,6 +78,12 @@ android {
             } else {
                 signingConfigs.getByName("debug")
             }
+            // Solo arquitecturas ARM para release; x86_64 solo se usa en
+            // emuladores y excluirlo ahorra unos 27 MiB en el APK final.
+            ndk {
+                abiFilters.clear()
+                abiFilters += listOf("armeabi-v7a", "arm64-v8a")
+            }
         }
     }
 }

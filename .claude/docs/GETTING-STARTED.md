@@ -54,7 +54,7 @@ npm run db:studio  # explorar la DB
 ```bash
 flutter analyze              # obligatorio antes de commit
 flutter test                 # unit + widget — 123 tests
-flutter build apk --release  # APK universal firmado
+flutter build apk --release  # APK solo ARM firmado
 flutter build web            # build web
 ```
 
