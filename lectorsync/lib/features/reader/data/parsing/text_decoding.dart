@@ -6,8 +6,8 @@ import 'dart:typed_data';
 /// Prueba UTF-8 (quitando el BOM) y, si los bytes no lo son, Windows-1252: el
 /// "ANSI" con el que el Bloc de notas guardaba los textos en español. Con
 /// `readAsString()`, que solo admite UTF-8, esos libros no se podían abrir.
-/// El backend cae a Latin-1 (`text-parser.ts`); Windows-1252 coincide con él
-/// en todas las letras y además recupera comillas, rayas y puntos
+/// El backend decodifica igual (`text-parser.ts`); Windows-1252 coincide con
+/// Latin-1 en todas las letras y además recupera comillas, rayas y puntos
 /// suspensivos tipográficos.
 String decodeTextBytes(Uint8List bytes) {
   final hasBom = bytes.length >= 3 &&

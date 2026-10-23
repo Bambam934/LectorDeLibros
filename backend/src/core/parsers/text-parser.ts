@@ -3,7 +3,6 @@ import { countWords, MAX_WORDS_PER_CHAPTER } from './types.js';
 
 const HEADING_RE = /^(?:#{1,6}\s+.+|(?:Capítulo|Chapter|CAPÍTULO|CHAPTER)\s+\S+.*|(?:PARTE|PART)\s+[IVXLCDM\d]+.*)$/im;
 const SEPARATOR_RE = /^\s*(?:\*{3,}|-{3,}|_{3,})\s*$/;
-const ENCODING_FALLBACK = 'latin1';
 
 const CHAPTER_HEADING_RE = /^(?:#{1,6}\s+(.+)|((?:Capítulo|Chapter|CAPÍTULO|CHAPTER)\s+\S+.*|(?:PARTE|PART)\s+[IVXLCDM\d]+.*))$/im;
 
@@ -37,10 +36,15 @@ export class TextParser implements BookParser {
     };
   }
 
+  // Igual que `decodeTextBytes` del cliente (text_decoding.dart): UTF-8 sin
+  // el BOM y, si los bytes no lo son, Windows-1252, el "ANSI" del Bloc de
+  // notas. Con Latin-1 se perdían €, comillas, rayas y puntos suspensivos.
   private decode(buffer: Buffer): string {
-    const utf8 = buffer.toString('utf-8');
-    if (isValidUtf8(buffer)) return utf8;
-    return buffer.toString(ENCODING_FALLBACK);
+    const hasBom = buffer.length >= 3 &&
+      buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf;
+    const body = hasBom ? buffer.subarray(3) : buffer;
+    if (isValidUtf8(body)) return body.toString('utf-8');
+    return decodeWindows1252(body);
   }
 
   private extractTitle(text: string): string | null {
@@ -128,6 +132,31 @@ function isValidUtf8(buffer: Buffer): boolean {
   const reEncoded = Buffer.from(utf8Decoded, 'utf-8');
   if (reEncoded.length !== buffer.length) return false;
   return reEncoded.equals(buffer);
+}
+
+// 0x80-0x9F de Windows-1252; el resto de bytes coincide con Latin-1. Los
+// cinco huecos sin asignar (0x81, 0x8D, 0x8F, 0x90, 0x9D) quedan como en
+// Latin-1. Tabla propia: el `TextDecoder('windows-1252')` de Node decodifica
+// como Latin-1 (0x80 sale U+0080, no €).
+const CP1252_HIGH = [
+  0x20ac, 0x0081, 0x201a, 0x0192, 0x201e, 0x2026, 0x2020, 0x2021, // 80-87
+  0x02c6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008d, 0x017d, 0x008f, // 88-8F
+  0x0090, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, // 90-97
+  0x02dc, 0x2122, 0x0161, 0x203a, 0x0153, 0x009d, 0x017e, 0x0178 // 98-9F
+];
+
+function decodeWindows1252(buffer: Buffer): string {
+  let out = '';
+  for (let start = 0; start < buffer.length; start += 8192) {
+    const end = Math.min(start + 8192, buffer.length);
+    const units = new Array<number>(end - start);
+    for (let i = start; i < end; i++) {
+      const b = buffer[i]!;
+      units[i - start] = b >= 0x80 && b < 0xa0 ? CP1252_HIGH[b - 0x80]! : b;
+    }
+    out += String.fromCharCode(...units);
+  }
+  return out;
 }
 
 // Enlaces e imágenes en tiempo LINEAL. Los patrones anteriores

@@ -97,6 +97,35 @@ describe('parsers — TextParser', () => {
     assert.equal(result.totalWords, result.chapters[0]!.wordCount);
   });
 
+  it('decodes a non-UTF-8 TXT as Windows-1252, not Latin-1', async () => {
+    // "Precio 10€ “dicho” – raya — fin… año" guardado en ANSI.
+    const buffer = Buffer.concat([
+      Buffer.from('Precio 10', 'latin1'), Buffer.from([0x80]),
+      Buffer.from(' ', 'latin1'), Buffer.from([0x93]), Buffer.from('dicho', 'latin1'), Buffer.from([0x94]),
+      Buffer.from(' ', 'latin1'), Buffer.from([0x96]), Buffer.from(' raya ', 'latin1'), Buffer.from([0x97]),
+      Buffer.from(' fin', 'latin1'), Buffer.from([0x85]), Buffer.from(' a', 'latin1'), Buffer.from([0xf1]),
+      Buffer.from('o ', 'latin1'), Buffer.from([0xe1])
+    ]);
+    const result = await parseBookFile(buffer, 'txt');
+
+    assert.equal(result.chapters[0]!.text, 'Precio 10€ “dicho” – raya — fin… año á');
+  });
+
+  it('strips the UTF-8 BOM from the text and the title', async () => {
+    const buffer = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('Título\n\nCuerpo del libro.', 'utf-8')]);
+    const result = await parseBookFile(buffer, 'txt');
+
+    assert.equal(result.title, 'Título');
+    assert.ok(!result.chapters[0]!.text.startsWith('﻿'));
+  });
+
+  it('keeps UTF-8 without BOM unchanged', async () => {
+    const content = 'Año “ñandú” — 10€';
+    const result = await parseBookFile(Buffer.from(content, 'utf-8'), 'txt');
+
+    assert.equal(result.chapters[0]!.text, content);
+  });
+
   it('splits TXT by "Capítulo" headings', async () => {
     const content = `Capítulo 1
 
