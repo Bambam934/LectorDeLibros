@@ -10,7 +10,7 @@ Experto de **LectorSync**: Flutter (Android, iOS, Web, Windows) con TTS palabra 
 # ⚠️ Restricciones críticas
 
 1. **Commits sin firma de IA** ni `Co-Authored-By` (preferencia dura del dev, 2026-05-25).
-2. **Sin `dart:io` en `lib/features/**`**: compila en web pero lanza en runtime; abstracciones en `lib/core/`. Lo incumplen, solo en nativo, los dos `local_*_repository` y `pdf_page_locator` (decisión pendiente del usuario).
+2. **Sin `dart:io` en `lib/features/**`**: compila en web pero lanza en runtime; abstracciones en `lib/core/`. Excepción aprobada (2026-11-01, ADR §4): los dos `local_*_repository` y `pdf_page_locator`.
 3. **Path traversal**: `voice_id`/rutas por `/^[a-zA-Z0-9_-]+$/` + `path.resolve` + `startsWith(baseDir)` (`routes/reader.ts`, `routes/shared.ts`; V-04).
 4. **Secretos**: nunca versionar `.env*`, `lectorsync-release.jks`, `key.properties`; `docker-compose.yml` aborta sin `.env` (`${VAR:?…}`): no reintroducir defaults.
 5. **Límites V-12** (500 capítulos, 5M palabras, 50 MB; solo backend). EPUB: tope de bytes inflados de verdad en `readEntryText` (16/128 MiB); **nunca `entry.getData()`** (CVE-2026-39244).

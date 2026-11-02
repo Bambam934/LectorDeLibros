@@ -53,6 +53,8 @@ Flag compile-time `OFFLINE_MODE` (`bool.fromEnvironment`, **default `true`** mie
 
 Modo conectado: `--dart-define=OFFLINE_MODE=false --dart-define=API_BASE_URL=http://<host>:3000`.
 
+**Excepción a la regla de `dart:io` (aprobada por el usuario el 2026-11-01):** `local_reader_repository.dart`, `local_library_repository.dart` y `pdf_page_locator.dart` pueden usar `dart:io` en `lib/features/` porque el modo offline solo corre en nativo. La regla sigue vigente para todo lo demás; un archivo nuevo no entra en la excepción sin decisión expresa.
+
 ## 5. Arquitectura de TTS
 
 - **`TtsRepositoryProxy`** — hot-swap en runtime entre TTS de dispositivo y audio externo sin recrear el BLoC.
