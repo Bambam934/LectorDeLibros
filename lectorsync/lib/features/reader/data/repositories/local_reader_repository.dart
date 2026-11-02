@@ -255,9 +255,10 @@ class LocalReaderRepository implements ReaderRepository {
     // Markdown (ADR 13). v7 (2026-10-04): los pies de figura repetidos ya no
     // se toman por pies de página. v8 (2026-10-04): fórmulas solo en libros
     // con matemáticas, huecos medidos con la letra más alta y sin espacios
-    // por solapes ("1 1"). Subir esta versión al cambiar cualquier parser, o
-    // el fix no se ve en libros ya importados.
-    return '${chapterCacheBase(storedPath)}v8.json';
+    // por solapes ("1 1"). v9 (2026-11-02): la monoespaciada dentro de una
+    // frase no parte el párrafo. Subir esta versión al cambiar cualquier
+    // parser, o el fix no se ve en libros ya importados.
+    return '${chapterCacheBase(storedPath)}v9.json';
   }
 
   // ---------- format parsers ----------

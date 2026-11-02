@@ -209,6 +209,122 @@ void main() {
       expect(_texts(blocks, ChapterBlockKind.paragraph),
           contains(contains('Thor (id 4) solo tiene dos conexiones')));
     });
+
+    group('monoespaciada dentro de una frase', () {
+      PdfTextFragment mono(double top, String text, {double left = 72}) =>
+          _frag(0, top, text,
+              left: left,
+              right: left + text.length * 5.85,
+              font: 'LiberationMono',
+              size: 9.8,
+              mono: true);
+      PdfTextFragment serif(double top, String text, {double right = 539.9}) =>
+          _frag(0, top, text,
+              left: 72, right: right, font: 'LiberationSerif', size: 15);
+      List<PdfTextFragment> prose() => [
+            for (var i = 0; i < 8; i++)
+              serif(75 + i * 18.75, 'Una línea de prosa del libro de Python.'),
+          ];
+      List<ChapterBlock> analyze(List<PdfTextFragment> fragments) =>
+          analyzePdfLayout(fragments, const [LayoutPageSize(612, 792)])!.blocks;
+
+      test('una URL que cierra la línea sigue en la frase', () {
+        final blocks = analyze([
+          ...prose(),
+          serif(225, 'La documentación oficial de Python está en'),
+          mono(243.75, 'https://docs.python.org/es/3/ con todos los'),
+          serif(262.5, 'detalles que hagan falta.'),
+        ]);
+
+        expect(_texts(blocks, ChapterBlockKind.code), isEmpty);
+        expect(
+            _texts(blocks, ChapterBlockKind.paragraph),
+            contains(contains('está en https://docs.python.org/es/3/ con '
+                'todos los detalles que hagan falta.')));
+      });
+
+      test('el punto final en monoespaciada no abre un bloque', () {
+        final blocks = analyze([
+          ...prose(),
+          serif(225, 'Tiene una web, pero se pasa el día tuiteando en'),
+          mono(243.75, '@joelgrus.'),
+          serif(262.5, 'Este libro ha sido creado para ayudar.'),
+        ]);
+
+        expect(_texts(blocks, ChapterBlockKind.code), isEmpty);
+        expect(_texts(blocks, ChapterBlockKind.paragraph),
+            contains(contains('tuiteando en @joelgrus.')));
+      });
+
+      test('una viñeta tras dos puntos sigue siendo texto', () {
+        final blocks = analyze([
+          ...prose(),
+          serif(225, 'Hay varios disponibles en línea:'),
+          mono(243.75, '■ Linear Algebra, en  http://joshua.smcvt.edu/'),
+          serif(262.5, 'de Jim Hefferon, de Saint Michael.'),
+        ]);
+
+        expect(_texts(blocks, ChapterBlockKind.code), isEmpty);
+        expect(
+            _texts(blocks, ChapterBlockKind.paragraph),
+            contains(contains(
+                '■ Linear Algebra, en http://joshua.smcvt.edu/ de Jim')));
+      });
+
+      test('una nota al pie con una URL es texto, y una llamada no', () {
+        final blocks = analyze([
+          ...prose(),
+          serif(225, 'Es un buen punto de partida para este estudio.'),
+          mono(270, '1 https://matplotlib.org/.'),
+          serif(315, 'Con esto cerramos el capítulo.'),
+          mono(360, 'get("https://matplotlib.org/")'),
+          serif(405, 'Y terminamos aquí.'),
+        ]);
+
+        expect(_texts(blocks, ChapterBlockKind.code),
+            ['get("https://matplotlib.org/")']);
+        expect(_texts(blocks, ChapterBlockKind.paragraph),
+            contains('1 https://matplotlib.org/.'));
+      });
+
+      test('el código que sigue a dos puntos es un bloque', () {
+        final blocks = analyze([
+          ...prose(),
+          serif(225, 'Podemos usar la función de error de Python:¹'),
+          mono(243.75, 'def normal_cdf(x: float) -> float:'),
+          serif(262.5, 'De nuevo, trazamos la figura.'),
+        ]);
+
+        expect(_texts(blocks, ChapterBlockKind.code),
+            ['def normal_cdf(x: float) -> float:']);
+      });
+
+      test('el código separado de la frase es un bloque aunque no cierre', () {
+        final blocks = analyze([
+          ...prose(),
+          serif(225, 'Podemos escribirlo de la siguiente forma'),
+          mono(270, 'print("hola")'),
+          serif(315, 'y ya tenemos el resultado que buscábamos.'),
+        ]);
+
+        expect(_texts(blocks, ChapterBlockKind.code), ['print("hola")']);
+      });
+
+      test('tres líneas seguidas son código aunque la frase quede abierta',
+          () {
+        final blocks = analyze([
+          ...prose(),
+          serif(225, 'Podemos escribirlo de la siguiente forma'),
+          mono(243.75, 'x = 1'),
+          mono(257.25, 'y = 2'),
+          mono(270.75, 'print(x + y)'),
+          serif(295, 'y ya tenemos el resultado que buscábamos.'),
+        ]);
+
+        expect(_texts(blocks, ChapterBlockKind.code),
+            ['x = 1\ny = 2\nprint(x + y)']);
+      });
+    });
   });
 
   group('analyzePdfLayout — títulos', () {

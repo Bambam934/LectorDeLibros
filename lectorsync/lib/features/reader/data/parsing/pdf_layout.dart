@@ -423,6 +423,9 @@ class _Line {
   String text = '';
   bool droppedAsHead = false;
 
+  /// Línea en monoespaciada que forma parte de una frase: va con la prosa.
+  bool inlineCode = false;
+
   void add(PdfTextFragment f) {
     if (parts.isEmpty || f.chars > _main.chars) _main = f;
     parts.add(f);
@@ -776,6 +779,9 @@ bool _looksLikeHeading(_Line l, _Line? prev, _BookProfile p) {
   return l.top - prev.bottom >= 0.4 * p.pitch;
 }
 
+/// Líneas seguidas en monoespaciada que aún pueden ser parte de una frase.
+const _kInlineCodeLines = 2;
+
 final RegExp _sentenceEnd = RegExp(r'[.!?:;…»"”)\]]$');
 
 /// `true` si la línea de cuerpo [l] abre párrafo tras la línea [prev].
@@ -783,7 +789,11 @@ bool _startsParagraph(_Line prev, _Line l, _BookProfile p) {
   // Otra fuente u otro tamaño: un pie de figura, una cita, una nota. Sin
   // esto, el pie "Figura 39" de la página siguiente se pegaba a la frase
   // que la página anterior dejaba a medias.
-  if (_styleKey(prev) != _styleKey(l)) return true;
+  if (!prev.inlineCode &&
+      !l.inlineCode &&
+      _styleKey(prev) != _styleKey(l)) {
+    return true;
+  }
   final endsSentence = _sentenceEnd.hasMatch(prev.text);
   final prevShort = prev.right <
       p.colRightOf(prev.page) - 0.12 * p.colWidthOf(prev.page);
@@ -796,6 +806,67 @@ bool _startsParagraph(_Line prev, _Line l, _BookProfile p) {
   // lista con sangría francesa las continuaciones también entran más adentro.
   final indented = l.left - p.colLeftOf(l.page) >= 0.8 * p.bodyHeight;
   return indented && (endsSentence || prevShort);
+}
+
+final RegExp _closedLine = RegExp(r'[.!?:;…»"”)\]][¹²³⁴-⁹⁰]*$');
+final RegExp _colonLine = RegExp(r':[¹²³⁴-⁹⁰]*$');
+final RegExp _startsBullet = RegExp(r'^[■•▪●]');
+final RegExp _plainUrl = RegExp(r'^[^()=\[\]{}"$]*https?://[^()=\[\]{}"$]*$');
+
+/// Devuelve a la prosa las líneas en monoespaciada que están dentro de una
+/// frase: una URL o un nombre de función que ocupa casi toda la línea.
+///
+/// Un trozo de hasta [_kInlineCodeLines] líneas, pegado al texto, sigue la
+/// frase si la anterior quedó abierta o la siguiente empieza en minúscula.
+/// Tras dos puntos es código de verdad, salvo que sea una viñeta. Una URL
+/// sin sintaxis de código alrededor (una nota al pie) tampoco es código.
+/// Sin esto, el párrafo se partía y la voz decía «Bloque de código» a media
+/// frase.
+void _absorbInlineCode(List<_Line> lines, List<_Kind> kinds, _BookProfile p) {
+  bool adjacent(_Line a, _Line b) =>
+      a.page != b.page || b.top - a.top <= 1.45 * p.pitch;
+
+  var i = 0;
+  while (i < lines.length) {
+    if (kinds[i] != _Kind.code) {
+      i++;
+      continue;
+    }
+    var end = i;
+    while (end + 1 < lines.length && kinds[end + 1] == _Kind.code) {
+      end++;
+    }
+    if (end - i + 1 <= _kInlineCodeLines) {
+      final before = i > 0 &&
+              kinds[i - 1] == _Kind.body &&
+              adjacent(lines[i - 1], lines[i])
+          ? lines[i - 1]
+          : null;
+      final after = end + 1 < lines.length &&
+              kinds[end + 1] == _Kind.body &&
+              adjacent(lines[end], lines[end + 1])
+          ? lines[end + 1]
+          : null;
+      final opens = before != null && !_closedLine.hasMatch(before.text);
+      final afterColon = before != null &&
+          _colonLine.hasMatch(before.text) &&
+          !_startsBullet.hasMatch(lines[i].text);
+      final flows = after != null &&
+          _startsLower.hasMatch(after.text) &&
+          !afterColon;
+      final urls = [
+        for (var j = i; j <= end; j++) lines[j].text,
+      ].every(_plainUrl.hasMatch);
+      if (opens || flows || urls) {
+        for (var j = i; j <= end; j++) {
+          kinds[j] = _Kind.body;
+          lines[j].inlineCode = true;
+          lines[j].text = lines[j].text.replaceAll(_whitespace, ' ');
+        }
+      }
+    }
+    i = end + 1;
+  }
 }
 
 List<ChapterBlock> _assemble(
@@ -813,6 +884,7 @@ List<ChapterBlock> _assemble(
       else
         _Kind.body,
   ];
+  _absorbInlineCode(lines, kinds, p);
 
   final blocks = <ChapterBlock>[];
   final group = <_Line>[];
