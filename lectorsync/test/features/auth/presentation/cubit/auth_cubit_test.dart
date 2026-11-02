@@ -23,7 +23,7 @@ class _FakeAuthRepository implements AuthRepository {
 
 void main() {
   group('AuthCubit', () {
-    test('LocalAuthRepository autentica directo y no permite cerrar sesion',
+    test('LocalAuthRepository autentica directo y no permite cerrar sesión',
         () async {
       final cubit = AuthCubit(LocalAuthRepository());
 
@@ -35,7 +35,7 @@ void main() {
       await cubit.close();
     });
 
-    test('repositorio falso emite Unauthenticated y permite cerrar sesion',
+    test('repositorio falso emite Unauthenticated y permite cerrar sesión',
         () async {
       final cubit = AuthCubit(_FakeAuthRepository());
 
