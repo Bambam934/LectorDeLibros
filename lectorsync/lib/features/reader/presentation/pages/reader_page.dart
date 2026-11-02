@@ -1862,7 +1862,10 @@ class _ReaderBodyState extends State<_ReaderBody> {
                             return _EditorialChapterHeader(
                               chapterNumber:
                                   widget.state.currentChapterIndex + 1,
-                              chapterTitle: chapter?.title ?? '',
+                              chapterTitle: chapter == null
+                                  ? ''
+                                  : chapterHeaderTitle(
+                                      chapter.title, chapter.text ?? ''),
                               foreground: colors.foreground,
                               bodyFontSize: prefs.fontSize,
                               fontFamily: prefs.fontFamilyName,
@@ -2019,6 +2022,20 @@ class _ChapterHeader extends StatelessWidget {
   }
 }
 
+final RegExp _notAlphanumeric = RegExp(r'[^\p{L}\p{N}]', unicode: true);
+
+/// Título del encabezado del capítulo: vacío si el texto ya empieza por él.
+///
+/// En un TXT o un Markdown la línea "Capítulo 1" es parte del texto y además
+/// da título al capítulo. Se quita del encabezado y no del texto: de ahí la
+/// lee la voz, y quitarla movería las posiciones de lectura guardadas.
+@visibleForTesting
+String chapterHeaderTitle(String title, String text) {
+  String key(String s) => s.toLowerCase().replaceAll(_notAlphanumeric, '');
+  final firstLine = text.trimLeft().split('\n').first;
+  return key(firstLine) == key(title) ? '' : title;
+}
+
 class _EditorialChapterHeader extends StatelessWidget {
   const _EditorialChapterHeader({
     required this.chapterNumber,
@@ -2070,18 +2087,20 @@ class _EditorialChapterHeader extends StatelessWidget {
               color: foreground.withValues(alpha: 0.3),
             ),
           ),
-          SizedBox(height: gap),
-          Text(
-            chapterTitle,
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: chapterTitleSize(bodyFontSize),
-              fontWeight: FontWeight.w500,
-              fontFamily: fontFamily,
-              color: foreground.withValues(alpha: 0.9),
-              height: 1.4,
+          if (chapterTitle.isNotEmpty) ...[
+            SizedBox(height: gap),
+            Text(
+              chapterTitle,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: chapterTitleSize(bodyFontSize),
+                fontWeight: FontWeight.w500,
+                fontFamily: fontFamily,
+                color: foreground.withValues(alpha: 0.9),
+                height: 1.4,
+              ),
             ),
-          ),
+          ],
         ],
       ),
     );

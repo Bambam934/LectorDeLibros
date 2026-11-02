@@ -96,15 +96,6 @@ class _BookShelvesSheetState extends State<BookShelvesSheet> {
           top: false,
           child: Column(
             children: [
-              const SizedBox(height: 8),
-              Container(
-                width: 40,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: scheme.outlineVariant,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
               LayoutBuilder(
                 builder: (context, constraints) {
                   final w = constraints.maxWidth.isFinite

@@ -368,33 +368,12 @@ class _GradientCover extends StatelessWidget {
           colors: [colors[0].withValues(alpha: 0.85), colors[1]],
         ),
       ),
+      // Sin el título: va justo debajo y el botón de opciones lo tapaba.
       child: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                Icons.auto_stories_rounded,
-                size: 36,
-                color: scheme.onPrimary.withValues(alpha: 0.85),
-              ),
-              const SizedBox(height: 12),
-              Text(
-                seed,
-                textAlign: TextAlign.center,
-                maxLines: 3,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: scheme.onPrimary,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w700,
-                  height: 1.3,
-                  letterSpacing: -0.2,
-                ),
-              ),
-            ],
-          ),
+        child: Icon(
+          Icons.auto_stories_rounded,
+          size: 36,
+          color: scheme.onPrimary.withValues(alpha: 0.85),
         ),
       ),
     );

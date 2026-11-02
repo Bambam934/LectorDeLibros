@@ -191,6 +191,21 @@ class _FakeFocusPrefs implements FocusPrefs {
 }
 
 void main() {
+  group('chapterHeaderTitle', () {
+    test('se vacía si el texto ya empieza por el título', () {
+      expect(chapterHeaderTitle('Capítulo 1', 'Capítulo 1\n\nEste es'), '');
+      expect(
+          chapterHeaderTitle('Capítulo 2 — El mar', 'CAPÍTULO 2: El mar\nTexto'),
+          '');
+    });
+
+    test('se conserva si el texto empieza por otra cosa', () {
+      expect(chapterHeaderTitle('Sección 1', 'Ciencia de datos\n\nTexto'),
+          'Sección 1');
+      expect(chapterHeaderTitle('Capítulo 1', ''), 'Capítulo 1');
+    });
+  });
+
   setUp(() {
     SharedPreferences.setMockInitialValues({});
     sl

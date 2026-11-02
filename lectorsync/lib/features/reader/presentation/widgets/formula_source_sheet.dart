@@ -94,15 +94,6 @@ class _FormulaSourceSheetState extends State<FormulaSourceSheet> {
             scheme.surface,
         child: Column(
           children: [
-            const SizedBox(height: 8),
-            Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: scheme.outlineVariant,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
             FutureBuilder<int?>(
               future: _pageIndex,
               builder: (context, snapshot) => _Header(

@@ -202,15 +202,6 @@ class _BookmarksSheetState extends State<BookmarksSheet> {
           top: false,
           child: Column(
             children: [
-              const SizedBox(height: 8),
-              Container(
-                width: 40,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: scheme.outlineVariant,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
               // LayoutBuilder pins explicit bounded width on the header
               // Row so its children (including Material buttons whose
               // _InputPadding expects a bounded width) never receive
