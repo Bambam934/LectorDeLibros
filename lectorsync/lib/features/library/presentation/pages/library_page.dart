@@ -801,6 +801,7 @@ class _LogoutButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (!context.read<AuthCubit>().canLogout) return const SizedBox.shrink();
     return IconButton(
       icon: const Icon(Icons.logout_rounded),
       onPressed: () => context.read<AuthCubit>().logout(),

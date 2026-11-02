@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import '../../data/repositories/local_auth_repository.dart';
 import '../../data/repositories/remote_auth_repository.dart';
 import '../../domain/repositories/auth_repository.dart';
 import 'auth_state.dart';
@@ -9,6 +10,10 @@ class AuthCubit extends Cubit<AuthState> {
   AuthCubit(this._authRepository) : super(const AuthInitial());
 
   final AuthRepository _authRepository;
+
+  /// En offline no hay sesión que cerrar.
+  bool get canLogout => _authRepository is! LocalAuthRepository;
+
   VoidCallback? _sessionListener;
 
   void listenSessionExpired(ValueNotifier<bool> notifier) {
@@ -35,6 +40,9 @@ class AuthCubit extends Cubit<AuthState> {
         } else {
           emit(const Unauthenticated());
         }
+      } else if (_authRepository is LocalAuthRepository) {
+        // Sin servidor no hay cuenta que proteger: se entra directo.
+        emit(const Authenticated());
       } else {
         emit(const Unauthenticated());
       }
