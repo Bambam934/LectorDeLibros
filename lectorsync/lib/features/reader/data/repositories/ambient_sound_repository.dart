@@ -15,10 +15,7 @@ import '../audio/synth_audio_source.dart';
 /// Uses its own `AudioPlayer` instance so it never collides with the
 /// TTS playback path; both players coexist on Android/iOS/desktop/web.
 class AmbientSoundRepository {
-  AmbientSoundRepository() : _player = AudioPlayer() {
-    // Loop forever — ambient sounds are meant to be background bed.
-    _player.setLoopMode(LoopMode.one);
-  }
+  AmbientSoundRepository() : _player = AudioPlayer();
 
   final AudioPlayer _player;
   AmbientSound? _current;
@@ -56,13 +53,15 @@ class AmbientSoundRepository {
   Future<void> _loadSource(AmbientSound sound) async {
     if (sound.isSynth) {
       await _player.setAudioSource(await _synthSource(sound));
-      return;
-    }
-    if (sound.isAsset) {
+    } else if (sound.isAsset) {
       await _player.setAsset(sound.assetPath);
-      return;
+    } else {
+      await _player.setUrl(sound.source);
     }
-    await _player.setUrl(sound.source);
+    // Loop forever: el ambiente es un fondo continuo. Va aquí, con `await`,
+    // y no en el constructor: en Windows, un `play()` justo después de cargar
+    // se pierde sin error si no hay otra llamada nativa en medio.
+    await _player.setLoopMode(LoopMode.one);
   }
 
   Future<SynthAudioSource> _synthSource(AmbientSound sound) async {
@@ -115,7 +114,7 @@ class AmbientSoundRepository {
 
   Future<void> play(AmbientSound sound) async {
     try {
-      if (_current?.id != sound.id) {
+      if (_current?.id != sound.id || _player.audioSource == null) {
         await _player.stop();
         await _loadSource(sound);
         _current = sound;
