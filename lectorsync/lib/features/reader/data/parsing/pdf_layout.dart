@@ -159,7 +159,16 @@ class PdfLayout {
     required this.bodyHeight,
     required this.pitch,
     this.allowFormulas = true,
+    this.softGaps = const {},
+    this.edgeGaps = const {},
   });
+
+  /// Candidatos que cortan un párrafo que seguía en la página siguiente.
+  final Set<ChapterBlock> softGaps;
+
+  /// Candidatos del borde de la página: ahí solo vale una imagen de verdad,
+  /// no el adorno de encima de un título de capítulo.
+  final Set<ChapterBlock> edgeGaps;
 
   /// Bloques en orden de lectura. Los de tipo figura son **candidatos**: hay
   /// que confirmar con [resolveFigureCandidates] que el hueco tiene tinta.
@@ -178,6 +187,9 @@ class PdfLayout {
 
   /// Zonas que hay que pintar para saber si tienen tinta, en el orden en que
   /// [resolveFigureCandidates] espera la respuesta.
+  ///
+  /// Los de [softGaps] cortan un párrafo que seguía en la página siguiente: si
+  /// el hueco está en blanco, el párrafo se vuelve a unir.
   List<(int, PageRect)> get figureCandidates => [
         for (final b in blocks)
           if (b.kind == ChapterBlockKind.figure) (b.page!, b.rect!),
@@ -265,8 +277,12 @@ PdfLayout? analyzePdfLayout(
     if (line.droppedAsHead) (dropped[line.page] ??= []).add(line);
   }
 
+  final softGaps = <ChapterBlock>{};
+  final edgeGaps = <ChapterBlock>{};
   return PdfLayout(
-    blocks: _assemble(kept, profile, pages, dropped),
+    blocks: _assemble(kept, profile, pages, dropped, softGaps, edgeGaps),
+    softGaps: softGaps,
+    edgeGaps: edgeGaps,
     bodyHeight: profile.bodyHeight,
     pitch: profile.pitch,
     allowFormulas:
@@ -374,15 +390,33 @@ List<ChapterBlock> resolveFigureCandidates(
 ) {
   final out = <ChapterBlock>[];
   var k = 0;
+  var rejoin = false;
   for (final block in layout.blocks) {
     if (block.kind != ChapterBlockKind.figure) {
-      out.add(block);
+      if (rejoin &&
+          block.kind == ChapterBlockKind.paragraph &&
+          out.isNotEmpty &&
+          out.last.kind == ChapterBlockKind.paragraph) {
+        out.last = ChapterBlock.paragraph(
+          joinProseLines([out.last.text, block.text]),
+        );
+      } else {
+        out.add(block);
+      }
+      rejoin = false;
       continue;
     }
     final ink = k < inkBounds.length ? inkBounds[k] : null;
     k++;
     // Sin tinta, o tan baja que es un filete decorativo y no una ecuación.
-    if (ink == null || ink.height < 0.4 * layout.bodyHeight) continue;
+    final minHeight = layout.edgeGaps.contains(block)
+        ? _kMinEdgeImageBodies * layout.bodyHeight
+        : 0.4 * layout.bodyHeight;
+    if (ink == null || ink.height < minHeight) {
+      if (layout.softGaps.contains(block)) rejoin = true;
+      continue;
+    }
+    rejoin = false;
     final region = block.rect!;
     final rect = PageRect(
       math.max(region.left, ink.left - _kInkPadding),
@@ -805,6 +839,13 @@ bool _looksLikeHeading(_Line l, _Line? prev, _BookProfile p) {
 const _kEdgeRepeatShare = 0.3;
 const _kMinEdgeRepeats = 5;
 
+/// Aire que debe sobrar en el borde de una página, en interlineados, para
+/// buscar ahí una imagen.
+const _kEdgeGapPitches = 3;
+
+/// Alto mínimo, en alturas de la letra del cuerpo, de una imagen en el borde.
+const _kMinEdgeImageBodies = 2;
+
 /// Huecos en una página, separados por rótulos, que ya son una tabla, y
 /// longitud máxima de un rótulo.
 const _kMinTableGaps = 3;
@@ -934,6 +975,39 @@ List<ChapterBlock> _joinListNumbers(List<ChapterBlock> blocks) {
 
 typedef _BlockSpan = ({int page, double top, double bottom});
 
+/// Dónde empieza y acaba lo pintable de una página: sus bordes, sin la
+/// cabecera ni el pie descartados.
+class _PageEdges {
+  _PageEdges(this._pages, this._dropped, this._fallbackBottom);
+
+  final List<LayoutPageSize> _pages;
+  final Map<int, List<_Line>> _dropped;
+  final double _fallbackBottom;
+
+  double _height(int page) =>
+      page < _pages.length ? _pages[page].height : _fallbackBottom;
+
+  double top(int page) {
+    var top = 0.0;
+    for (final l in _dropped[page] ?? const <_Line>[]) {
+      if (l.unionBottom < _height(page) / 2) {
+        top = math.max(top, l.unionBottom);
+      }
+    }
+    return top;
+  }
+
+  double bottom(int page) {
+    var bottom = _height(page);
+    for (final l in _dropped[page] ?? const <_Line>[]) {
+      if (l.unionTop > _height(page) / 2) {
+        bottom = math.min(bottom, l.unionTop);
+      }
+    }
+    return bottom;
+  }
+}
+
 final RegExp _longWord = RegExp(r'\p{L}{4,}', unicode: true);
 final RegExp _rowNumber = RegExp(r'^\d{1,3}[.)]$');
 
@@ -954,31 +1028,8 @@ List<ChapterBlock> _mergeTableRegions(
   List<ChapterBlock> blocks,
   Map<int, _BlockSpan> spans,
   _BookProfile p,
-  List<LayoutPageSize> pages,
-  Map<int, List<_Line>> dropped,
+  _PageEdges edges,
 ) {
-  double pageHeight(int page) =>
-      page < pages.length ? pages[page].height : p.textBottom;
-  double pageTop(int page) {
-    var top = 0.0;
-    for (final l in dropped[page] ?? const <_Line>[]) {
-      if (l.unionBottom < pageHeight(page) / 2) {
-        top = math.max(top, l.unionBottom);
-      }
-    }
-    return top;
-  }
-
-  double pageBottom(int page) {
-    var bottom = pageHeight(page);
-    for (final l in dropped[page] ?? const <_Line>[]) {
-      if (l.unionTop > pageHeight(page) / 2) {
-        bottom = math.min(bottom, l.unionTop);
-      }
-    }
-    return bottom;
-  }
-
   bool isLabel(int i, int page) {
     final b = blocks[i];
     return b.kind == ChapterBlockKind.paragraph &&
@@ -994,7 +1045,7 @@ List<ChapterBlock> _mergeTableRegions(
     final nextPage = next < blocks.length
         ? blocks[next].page ?? spans[next]?.page
         : null;
-    if (nextPage != page) return math.max(bottom, pageBottom(page));
+    if (nextPage != page) return math.max(bottom, edges.bottom(page));
     final below = spans[next]?.top;
     return below == null ? bottom : math.max(bottom, below - 0.25 * p.pitch);
   }
@@ -1064,7 +1115,7 @@ List<ChapterBlock> _mergeTableRegions(
     for (var nextPage = page + 1;; nextPage++) {
       var end = next;
       var hasGap = false;
-      var regionBottom = pageTop(nextPage);
+      var regionBottom = edges.top(nextPage);
       while (end < blocks.length) {
         final b = blocks[end];
         if (isLabel(end, nextPage)) {
@@ -1082,7 +1133,7 @@ List<ChapterBlock> _mergeTableRegions(
         page: nextPage,
         rect: PageRect(
           first.rect!.left,
-          pageTop(nextPage),
+          edges.top(nextPage),
           first.rect!.right,
           bottomOf(end - 1, nextPage, regionBottom),
         ),
@@ -1101,6 +1152,8 @@ List<ChapterBlock> _assemble(
   _BookProfile p,
   List<LayoutPageSize> pages,
   Map<int, List<_Line>> dropped,
+  Set<ChapterBlock> softGaps,
+  Set<ChapterBlock> edgeGaps,
 ) {
   final kinds = <_Kind>[
     for (var i = 0; i < lines.length; i++)
@@ -1113,6 +1166,7 @@ List<ChapterBlock> _assemble(
   ];
   _absorbInlineCode(lines, kinds, p);
 
+  final edges = _PageEdges(pages, dropped, p.textBottom);
   final blocks = <ChapterBlock>[];
   final spans = <int, _BlockSpan>{};
   final group = <_Line>[];
@@ -1143,10 +1197,88 @@ List<ChapterBlock> _assemble(
     groupKind = null;
   }
 
+  void addGap(int page, double top, double bottom, {bool fullWidth = false}) {
+    final size = page < pages.length ? pages[page] : null;
+    final left = p.colLeftOf(page);
+    final right = p.colRightOf(page);
+    final margin = 0.15 * (right - left);
+    blocks.add(ChapterBlock.figure(
+      page: page,
+      rect: PageRect(
+        fullWidth ? 0 : math.max(0.0, left - margin),
+        top,
+        fullWidth && size != null
+            ? size.width
+            : size == null
+                ? right + margin
+                : math.min(size.width, right + margin),
+        bottom,
+      ),
+      // Provisional: lo decide la altura de la tinta.
+      figureKind: FigureKind.figure,
+      textHeight: p.bodyHeight,
+    ));
+  }
+
+  // Una imagen también puede ir arriba o abajo de la página, sin línea al otro
+  // lado, u ocupar una página sin texto: la mitad de las de "De animales a
+  // dioses" no se veían. Solo se mira si el texto empieza o acaba antes de lo
+  // habitual; la tinta decide si hay algo. El índice descartado no cuenta.
+  void addEdgeGaps(_Line? before, _Line? after, {bool soft = false}) {
+    final minGap = _kEdgeGapPitches * p.pitch;
+    void addEdge(int page, double top, double bottom) {
+      flush();
+      addGap(page, top, bottom);
+      edgeGaps.add(blocks.last);
+      if (soft) softGaps.add(blocks.last);
+    }
+
+    if (before != null) {
+      final page = before.page;
+      final bottom = edges.bottom(page);
+      if (before.unionBottom < p.textBottom - p.pitch &&
+          bottom - before.unionBottom >= minGap &&
+          !_coversDropped(dropped[page], before.unionBottom, bottom)) {
+        addEdge(page, before.unionBottom, bottom);
+      }
+    }
+    final firstEmpty = before == null ? 0 : before.page + 1;
+    final lastEmpty = after == null ? pages.length - 1 : after.page - 1;
+    for (var page = firstEmpty; page <= lastEmpty; page++) {
+      final top = edges.top(page);
+      final bottom = edges.bottom(page);
+      if (_coversDropped(dropped[page], top, bottom)) continue;
+      flush();
+      addGap(page, top, bottom, fullWidth: true);
+      edgeGaps.add(blocks.last);
+      if (soft) softGaps.add(blocks.last);
+    }
+    if (after != null) {
+      final page = after.page;
+      final top = edges.top(page);
+      if (after.unionTop > p.textTop + p.pitch &&
+          after.unionTop - top >= minGap &&
+          !_coversDropped(dropped[page], top, after.unionTop)) {
+        addEdge(page, top, after.unionTop);
+      }
+    }
+  }
+
   _Line? prev;
   for (var i = 0; i < lines.length; i++) {
     final l = lines[i];
     final kind = kinds[i];
+
+    if (prev?.page != l.page) {
+      addEdgeGaps(
+        prev,
+        l,
+        soft: prev != null &&
+            kinds[i - 1] == _Kind.body &&
+            kinds[i] == _Kind.body &&
+            !_startsParagraph(prev, l, p),
+      );
+    }
 
     var gapBreak = false;
     // El hueco va de la letra más baja de una línea a la más alta de la
@@ -1158,22 +1290,7 @@ List<ChapterBlock> _assemble(
       if (gapBottom - gapTop >= _kGapFactor * p.bodyHeight &&
           !_coversDropped(dropped[l.page], gapTop, gapBottom)) {
         flush();
-        final page = l.page < pages.length ? pages[l.page] : null;
-        final left = p.colLeftOf(l.page);
-        final right = p.colRightOf(l.page);
-        final margin = 0.15 * (right - left);
-        blocks.add(ChapterBlock.figure(
-          page: l.page,
-          rect: PageRect(
-            math.max(0.0, left - margin),
-            gapTop,
-            page == null ? right + margin : math.min(page.width, right + margin),
-            gapBottom,
-          ),
-          // Provisional: lo decide la altura de la tinta.
-          figureKind: FigureKind.figure,
-          textHeight: p.bodyHeight,
-        ));
+        addGap(l.page, gapTop, gapBottom);
         gapBreak = true;
       }
     }
@@ -1195,9 +1312,10 @@ List<ChapterBlock> _assemble(
     group.add(l);
     prev = l;
   }
+  addEdgeGaps(prev, null);
   flush();
   return _joinListNumbers(
-    _mergeTableRegions(blocks, spans, p, pages, dropped),
+    _mergeTableRegions(blocks, spans, p, edges),
   );
 }
 

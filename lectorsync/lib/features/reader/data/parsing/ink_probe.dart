@@ -70,7 +70,7 @@ class PdfrxInkProbe implements InkProbe {
         if (image == null) continue;
         try {
           for (final i in entry.value) {
-            result[i] = _scan(image.pixels, image.width, image.height,
+            result[i] = scanInk(image.pixels, image.width, image.height,
                 regions[i].$2, scale);
           }
         } finally {
@@ -96,8 +96,10 @@ class PdfrxInkProbe implements InkProbe {
   /// "Nota:" enmarcada solo tienen el borde del marco (la línea de arriba y
   /// los arranques de los lados). Por eso hace falta tinta **dentro** de la
   /// caja, sin contar las filas que la cruzan casi entera ni sus columnas de
-  /// los bordes.
-  static PageRect? _scan(
+  /// los bordes. Un marco tiene pocas filas así; una foto oscura, casi todas:
+  /// entonces es una imagen, no un marco.
+  @visibleForTesting
+  static PageRect? scanInk(
     Uint8List pixels,
     int width,
     int height,
@@ -139,14 +141,19 @@ class PdfrxInkProbe implements InkProbe {
     final boxWidth = maxX - minX + 1;
     final edge = boxWidth >= 12 ? 2 : 0;
     var interior = 0;
+    var fullRows = 0;
     for (var y = minY; y <= maxY; y++) {
-      if (rowInk[y - y0] >= 0.6 * boxWidth) continue;
+      if (rowInk[y - y0] >= 0.6 * boxWidth) {
+        fullRows++;
+        continue;
+      }
       var offset = (y * width + minX + edge) * 4;
       for (var x = minX + edge; x <= maxX - edge; x++, offset += 4) {
         if (isInk(offset)) interior++;
       }
     }
-    if (interior < _minInkPixels) return null;
+    final solid = fullRows >= math.max(4, 0.25 * (maxY - minY + 1));
+    if (interior < _minInkPixels && !solid) return null;
     return PageRect(
       minX / scale,
       minY / scale,

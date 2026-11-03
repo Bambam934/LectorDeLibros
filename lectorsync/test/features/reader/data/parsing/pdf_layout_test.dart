@@ -39,6 +39,8 @@ PdfTextFragment _frag(
       mathChars: mathChars,
     );
 
+const _onePage = [LayoutPageSize(439.4, 609.4)];
+
 /// Una línea de cuerpo justificada, de margen a margen.
 PdfTextFragment _body(int page, double top, String text, {double left = 71}) =>
     _frag(page, top, text, left: left, right: 382.7);
@@ -51,7 +53,10 @@ List<PdfTextFragment> _filler(int page, {double from = 99.3, int lines = 12}) =>
     ];
 
 List<ChapterBlock> _blocks(List<PdfTextFragment> fragments) {
-  final layout = analyzePdfLayout(fragments, _pages);
+  // Solo las páginas con contenido: las vacías se miran enteras por si son una
+  // imagen, y aquí no hay tinta que las descarte.
+  final last = fragments.fold(0, (m, f) => f.page > m ? f.page : m);
+  final layout = analyzePdfLayout(fragments, _pages.take(last + 1).toList());
   expect(layout, isNotNull, reason: 'el libro debería tener maquetación');
   return layout!.blocks;
 }
@@ -160,7 +165,11 @@ void main() {
       ]);
 
       expect(blocks.map((b) => b.text).join(' '), isNot(contains('....')));
-      expect(blocks.where((b) => b.kind == ChapterBlockKind.figure), isEmpty);
+      // Ningún hueco sobre el índice; el aire de debajo lo juzga la tinta.
+      expect(
+          blocks.where((b) =>
+              b.kind == ChapterBlockKind.figure && b.rect!.top < 170),
+          isEmpty);
     });
   });
 
@@ -192,6 +201,119 @@ void main() {
           .blocks;
 
       expect(blocks.map((b) => b.text).join(' '), contains('Ejercicio 1'));
+    });
+  });
+
+  group('analyzePdfLayout — imágenes en el borde de la página', () {
+    final pages = [
+      for (var i = 0; i < 5; i++) const LayoutPageSize(439.4, 609.4),
+    ];
+    List<PdfTextFragment> full(int page) => _filler(page, lines: 26);
+
+    test('una página normal no da candidatos', () {
+      final layout =
+          analyzePdfLayout([for (var p = 0; p < 5; p++) ...full(p)], pages)!;
+
+      expect(layout.figureCandidates, isEmpty);
+    });
+
+    test('el texto que empieza más abajo deja un candidato encima', () {
+      final layout = analyzePdfLayout([
+        ...full(0),
+        ...full(1),
+        ..._filler(2, from: 300, lines: 12),
+        ...full(3),
+        ...full(4),
+      ], pages)!;
+      final c = layout.figureCandidates.single;
+
+      expect(c.$1, 2);
+      expect(c.$2.top, 0);
+      expect(c.$2.bottom, 300);
+    });
+
+    test('el texto que acaba antes deja un candidato debajo', () {
+      final layout = analyzePdfLayout([
+        ...full(0),
+        ...full(1),
+        ..._filler(2, lines: 8),
+        ...full(3),
+        ...full(4),
+      ], pages)!;
+      final c = layout.figureCandidates.single;
+
+      expect(c.$1, 2);
+      expect(c.$2.bottom, 609.4);
+    });
+
+    test('sin imagen, el párrafo que sigue en la otra página se une', () {
+      final layout = analyzePdfLayout([
+        ...full(0),
+        ...full(1),
+        ..._filler(2, lines: 8),
+        _body(2, 207.3, 'Esta frase sigue en la página siguiente pero'),
+        _body(3, 99.3, 'termina aquí con una sola línea.'),
+        ..._filler(3, from: 112.8, lines: 25),
+        ...full(4),
+      ], pages)!;
+      final blocks = resolveFigureCandidates(
+        layout,
+        List.filled(layout.figureCandidates.length, null),
+      );
+
+      expect(layout.figureCandidates, isNotEmpty);
+      expect(
+          _texts(blocks, ChapterBlockKind.paragraph),
+          contains(contains(
+              'sigue en la página siguiente pero termina aquí')));
+    });
+
+    test('con imagen, el párrafo queda partido por ella', () {
+      final layout = analyzePdfLayout([
+        ...full(0),
+        ...full(1),
+        ..._filler(2, lines: 8),
+        _body(2, 207.3, 'Esta frase sigue en la página siguiente pero'),
+        _body(3, 99.3, 'termina aquí con una sola línea.'),
+        ..._filler(3, from: 112.8, lines: 25),
+        ...full(4),
+      ], pages)!;
+      final blocks = resolveFigureCandidates(
+        layout,
+        const [PageRect(80, 300, 360, 500)],
+      );
+
+      expect(blocks.where((b) => b.kind == ChapterBlockKind.figure),
+          hasLength(1));
+    });
+
+    test('un adorno bajo en el borde no es una imagen', () {
+      final layout = analyzePdfLayout([
+        ...full(0),
+        ...full(1),
+        ..._filler(2, from: 300, lines: 12),
+        ...full(3),
+        ...full(4),
+      ], pages)!;
+      final blocks = resolveFigureCandidates(
+        layout,
+        const [PageRect(69, 99, 105, 114)],
+      );
+
+      expect(blocks.where((b) => b.kind == ChapterBlockKind.figure), isEmpty);
+    });
+
+    test('una página sin texto se mira entera, de borde a borde', () {
+      final layout = analyzePdfLayout([
+        ...full(0),
+        ...full(1),
+        ...full(3),
+        ...full(4),
+      ], pages)!;
+      final c = layout.figureCandidates.single;
+
+      expect(c.$1, 2);
+      expect(c.$2, const PageRect(0, 0, 439.4, 609.4));
     });
   });
 
@@ -635,7 +757,7 @@ void main() {
         ];
 
     test('un hueco grande entre dos líneas es un candidato', () {
-      final layout = analyzePdfLayout(pageWithGap(), _pages)!;
+      final layout = analyzePdfLayout(pageWithGap(), _onePage)!;
 
       expect(layout.figureCandidates, hasLength(1));
       final (page, rect) = layout.figureCandidates.single;
@@ -645,7 +767,7 @@ void main() {
     });
 
     test('con tinta pasa a fórmula recortada a la tinta; sin ella se quita', () {
-      final layout = analyzePdfLayout(pageWithGap(), _pages)!;
+      final layout = analyzePdfLayout(pageWithGap(), _onePage)!;
 
       final inked = resolveFigureCandidates(
           layout, const [PageRect(150, 197, 300, 215)]);
@@ -663,7 +785,7 @@ void main() {
     test('en un libro sin matemáticas, una imagen baja es una figura', () {
       // "De animales a dioses": el banner de una web, de 42 pt de alto,
       // salía como "Fórmula.".
-      final layout = analyzePdfLayout(pageWithGap(mathChars: 0), _pages)!;
+      final layout = analyzePdfLayout(pageWithGap(mathChars: 0), _onePage)!;
 
       final blocks = resolveFigureCandidates(
           layout, const [PageRect(150, 197, 300, 215)]);
@@ -687,7 +809,7 @@ void main() {
         _frag(0, 190, 'ace unos 13.500 millones de años, la materia',
             left: 95, right: 382.7),
         ..._filler(0, from: 203.5, lines: 5),
-      ], _pages)!;
+      ], _onePage)!;
 
       expect(layout.figureCandidates, isEmpty);
       expect(layout.blocks.map((b) => b.text).join(' '),
@@ -695,7 +817,7 @@ void main() {
     });
 
     test('un filete decorativo no es una fórmula', () {
-      final layout = analyzePdfLayout(pageWithGap(), _pages)!;
+      final layout = analyzePdfLayout(pageWithGap(), _onePage)!;
 
       final blocks = resolveFigureCandidates(
           layout, const [PageRect(71, 205, 382, 206)]);
@@ -709,7 +831,7 @@ void main() {
         _body(0, 146, 'de la red (véase la figura 1.2).'),
         _body(0, 340, 'Esto tiene la virtud de ser bastante fácil de calcular'),
         ..._filler(0, from: 353.5, lines: 6),
-      ], _pages)!;
+      ], _onePage)!;
 
       final blocks = resolveFigureCandidates(
           layout, const [PageRect(80, 160, 360, 330)]);

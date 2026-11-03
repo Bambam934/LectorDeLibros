@@ -257,9 +257,10 @@ class LocalReaderRepository implements ReaderRepository {
     // con matemáticas, huecos medidos con la letra más alta y sin espacios
     // por solapes ("1 1"). v9 (2026-11-02): la monoespaciada dentro de una
     // frase no parte el párrafo. v10 (2026-11-02): las tablas de fórmulas
-    // dibujadas se recortan enteras. Subir esta versión al cambiar cualquier
-    // parser, o el fix no se ve en libros ya importados.
-    return '${chapterCacheBase(storedPath)}v10.json';
+    // dibujadas se recortan enteras. v11 (2026-11-02): imágenes en el borde de
+    // la página, en páginas sin texto y fotos oscuras. Subir esta versión al
+    // cambiar cualquier parser, o el fix no se ve en libros ya importados.
+    return '${chapterCacheBase(storedPath)}v11.json';
   }
 
   // ---------- format parsers ----------
