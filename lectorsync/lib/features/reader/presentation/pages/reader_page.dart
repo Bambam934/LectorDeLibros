@@ -1759,7 +1759,11 @@ class _ReaderBodyState extends State<_ReaderBody> {
           }
         },
         behavior: HitTestBehavior.opaque,
-        child: Column(
+        // Sin barras no hay AppBar que aparte el texto de la barra de estado.
+        // Con ella, el padding ya viene consumido y esto no hace nada.
+        child: SafeArea(
+          bottom: false,
+          child: Column(
           children: [
             // Cambio de capítulo. El texto anterior sigue en pantalla, así
             // que basta una barra fina: sustituirlo por un spinner a
@@ -1832,6 +1836,10 @@ class _ReaderBodyState extends State<_ReaderBody> {
                     : const SizedBox.shrink(),
               ),
             Expanded(
+              // Con clave: al ocultar las barras cambian los hijos de la columna y,
+              // sin ella, la lista se destruía y la vista saltaba al principio
+              // del capítulo.
+              key: const ValueKey('reader-text'),
               child: Builder(
                 builder: (context) {
                   final textStyle = TextStyle(
@@ -1948,6 +1956,7 @@ class _ReaderBodyState extends State<_ReaderBody> {
                 onNext: () => widget.onNavigateChapter(1),
               ),
           ],
+          ),
         ),
       ),
     );

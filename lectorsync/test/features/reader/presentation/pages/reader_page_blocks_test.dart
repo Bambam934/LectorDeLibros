@@ -296,6 +296,32 @@ void main() {
     expect(find.textContaining('Párrafo 50 del capítulo A'), findsOneWidget);
   });
 
+  testWidgets('tocar el texto oculta las barras sin mover la lectura',
+      (tester) async {
+    await pumpReader(
+      tester,
+      chapters: [_longBlocks('A')],
+      initialChapterId: 'ch-0001',
+      initialWordIndex: 600,
+    );
+    for (var i = 0; i < 5; i++) {
+      await tester.pump(const Duration(milliseconds: 300));
+    }
+    final offset = scrollOffset(tester);
+    expect(offset, greaterThan(1000));
+
+    for (var i = 0; i < 2; i++) {
+      await tester.tapAt(const Offset(400, 1000));
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 400));
+
+      // Sin barras, el texto gana alto: se ajusta un poco, sin saltar.
+      expect(scrollOffset(tester), closeTo(offset, 300),
+          reason: 'toque ${i + 1}');
+      expect(find.textContaining('Párrafo 50 del capítulo A'), findsOneWidget);
+    }
+  });
+
   testWidgets('mover la posición sin voz lleva la vista hasta la palabra',
       (tester) async {
     await pumpReader(tester, chapters: [_longBlocks('A')]);
