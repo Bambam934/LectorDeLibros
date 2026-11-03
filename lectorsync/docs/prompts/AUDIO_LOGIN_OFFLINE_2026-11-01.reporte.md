@@ -85,10 +85,10 @@ Rama: `encargo/audio-login-offline`
   - **Evidencia:**
     `git status` muestra únicamente `docs/` como untracked (reporte sin commitear).
     Archivos modificados y commiteados:
-    1. `lib/features/reader/data/repositories/ambient_sound_repository.dart` (en commit 961a550)
-    2. `lib/features/auth/presentation/cubit/auth_cubit.dart` (en commit 136d682)
-    3. `lib/features/library/presentation/pages/library_page.dart` (en commit 136d682)
-    4. `test/features/auth/presentation/cubit/auth_cubit_test.dart` (en commit 136d682)
+    1. `lib/features/reader/data/repositories/ambient_sound_repository.dart` (en commit b06905a)
+    2. `lib/features/auth/presentation/cubit/auth_cubit.dart` (en commit ca83472)
+    3. `lib/features/library/presentation/pages/library_page.dart` (en commit ca83472)
+    4. `test/features/auth/presentation/cubit/auth_cubit_test.dart` (en commit ca83472)
 
 ---
 

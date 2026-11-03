@@ -3,8 +3,8 @@
 **Constructor: Antigravity**
 
 ## Commits
-- `b478094` `fix(library): leer libros importados con stream y validar límite antes de cargar` — P1
-- `7a52d37` `build(android): filtrar arquitecturas en release para generar APK solo ARM` — P2
+- `626edc3` `fix(library): leer libros importados con stream y validar límite antes de cargar` — P1
+- `85dccbf` `build(android): filtrar arquitecturas en release para generar APK solo ARM` — P2
 
 ## Criterios de aceptación
 - CA-1: CUMPLE — `test/features/library/presentation/utils/picked_book_reader_test.dart:14-53` comprueba que con `size = customLimit + 1` y `size = kMaxImportBytes + 1` devuelve `PickedBookTooLarge` y no se suscribe al stream (`subscribed == false`, comprobado con `onListen: fail(...)`). En `lectorsync/lib/features/library/presentation/utils/picked_book_reader.dart:67-69`, la validación `if (file.size > maxBytes)` retorna inmediatamente antes de acceder a `file.readStream`.

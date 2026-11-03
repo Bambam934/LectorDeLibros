@@ -1,6 +1,6 @@
 # Plan: bloques tipados por maquetación en los PDF offline (ADR 13)
 
-*Diseño aprobado el 2026-10-03 con `/diseñar` (sesión 24), sección a sección. **Implementado el 2026-10-04** (`e8c0aff`, `a185f45`, `0e374d3`, `de8eea5`): pasos 1 a 10 hechos. Verificado en el Pixel el mismo día, con siete arreglos (`add07e2`..`4d3bf5a`); falta el ajuste de leer el código y una prueba más larga en Windows. Lo hallado al implementar y al verificar está en el ADR 13.*
+*Diseño aprobado el 2026-10-03 con `/diseñar` (sesión 24), sección a sección. **Implementado el 2026-10-04** (`65eefbc`, `7bed6c4`, `3505ebe`, `98bac22`): pasos 1 a 10 hechos. Verificado en el Pixel el mismo día, con siete arreglos (`21c5f99`..`e40c3ec`); falta el ajuste de leer el código y una prueba más larga en Windows. Lo hallado al implementar y al verificar está en el ADR 13.*
 
 ## Objetivo
 
@@ -74,7 +74,7 @@ Las mediciones se hicieron con el pdf.js del backend, usando `.claude/tools/pdf_
 - `PdfTextExtractor.extractTextLines({startPageIndex, endPageIndex})` devuelve `List<TextLine>` (`pdf_text_extractor.dart:130`).
 - Cada `TextLine` trae `text`, `fontName`, `fontStyle`, `fontSize`, `bounds` (Rect), `pageIndex` y `wordCollection`.
 - `TextWord` debería traer la fuente de cada palabra: **comprobarlo al implementar**.
-- Syncfusion mutila los pares UTF-16 fuera del plano básico: la 𝑥 (U+1D465, `D835 DC65`) llega como `D835 0C65`. Hay que aplicar `LocalReaderRepository.repairSurrogates` **a cada línea** (lo pidió la sesión "Windows logs monitoring", que lo arregló en `800844f`).
+- Syncfusion mutila los pares UTF-16 fuera del plano básico: la 𝑥 (U+1D465, `D835 DC65`) llega como `D835 0C65`. Hay que aplicar `LocalReaderRepository.repairSurrogates` **a cada línea** (lo pidió la sesión "Windows logs monitoring", que lo arregló en `69e4521`).
 
 ## Diseño por secciones (aprobado)
 
@@ -235,7 +235,7 @@ Se hace en el Pixel 10 Pro XL. Ver en `memory/entorno_herramientas.md` cómo ins
 ## Coordinación
 
 - **Otra sesión de Claude**, "Windows logs monitoring", trabaja en el mismo repo (Windows). Comprobarlo con ListAgents antes de tocar `local_reader_repository.dart`, y commitear solo los archivos propios (`git add` por ruta).
-- **`repairSurrogates`** ya está en `800844f`.
+- **`repairSurrogates`** ya está en `69e4521`.
 
 ## Pendientes ajenos a este plan
 

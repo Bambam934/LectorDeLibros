@@ -4,9 +4,9 @@
 
 ## Commits
 
-- `e28bf2d` fix(parsers): decodificar los TXT en ANSI como Windows-1252 y quitar el BOM — P1 (incluye el comentario de CA-6)
-- `75db8ac` chore(deps): quitar @types/adm-zip, que sobra — P2
-- `0098a16` fix(library): rechazar al importar offline los libros de más de 50 MB — P3
+- `05414f8` fix(parsers): decodificar los TXT en ANSI como Windows-1252 y quitar el BOM — P1 (incluye el comentario de CA-6)
+- `74c862f` chore(deps): quitar @types/adm-zip, que sobra — P2
+- `dfd518b` fix(library): rechazar al importar offline los libros de más de 50 MB — P3
 
 ## Criterios de aceptación
 
