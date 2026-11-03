@@ -166,8 +166,13 @@ class ReadingAudioHandler extends BaseAudioHandler {
     }
     _interruptionSubs
       ..clear()
-      ..add(becomingNoisy.listen((_) => pause()))
+      ..add(becomingNoisy.listen((_) {
+        debugPrint('[ReadingAudio] se desconectó la salida de audio');
+        pause();
+      }))
       ..add(interruptions.listen((event) {
+        debugPrint('[ReadingAudio] interrupción: ${event.type} '
+            'begin=${event.begin}');
         // `duck` es un aviso breve que solo baja el volumen (navegación, un
         // sonido del sistema): no merece cortar la lectura.
         if (event.begin && event.type != AudioInterruptionType.duck) pause();
