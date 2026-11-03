@@ -47,7 +47,7 @@ La deuda de 2026-07-16 (`reader` importaba `library.data` en modo offline) está
 
 Flag compile-time `OFFLINE_MODE` (`bool.fromEnvironment`, **default `true`** mientras no haya servidor desplegado). En `true` la app no depende del backend:
 
-- `LocalAuthRepository` — acepta cualquier credencial no vacía.
+- `LocalAuthRepository` — sin login: desde 2026-11-02 se entra directo a la biblioteca y no hay botón de cerrar sesión.
 - `LocalLibraryRepository` — archivos en el sandbox (`path_provider`) + catálogo JSON en `SharedPreferences`.
 - `LocalReaderRepository` — parsea PDF (Syncfusion), TXT (por "Capítulo X") y MD (por headers). **EPUB no soportado offline aún.**
 
@@ -165,3 +165,8 @@ Reabre el §7, que evitó a propósito tocar la extracción, la entidad `Chapter
   - Syncfusion llama igual a la redonda y a la cursiva, así que la cursiva también separa palabras, y los exponentes pasan a superíndice Unicode ("y=x²") (`821593a`);
   - solo hay fórmulas en libros con señal matemática (fuente Symbol o Cambria Math, o signos), el hueco se mide con la letra más alta (una capitular daba una figura falsa) y un solape entre palabras no es un espacio ("1 1") (`4d3bf5a`, caché v8);
   - en la pantalla, la sangría va solo en la primera línea, el "1." de una lista no va aparte y la vista va a la palabra al abrir, al darle al play y al pasar de capítulo (`e2ae3f8`).
+- **Corregido en la depuración del 2026-11-02**, medido sobre los libros enteros descargando sus cachés (caché v9):
+  - la monoespaciada dentro de una frase (URL, nombres de función) ya no parte el párrafo: hasta 2 líneas pegadas a una frase abierta siguen en la prosa, y una nota al pie con URL también. De 43 frases cortadas a 0 en el libro de Python, sin colar código en la prosa (`ce68df8`);
+  - un pie en la fuente del cuerpo es la última línea de cada página y marca él mismo dónde acaba el texto, así que nunca entraba en la zona filtrada: los 525 "www.lectulandia.com - Página N" de "De animales a dioses" se leían en voz alta. Una línea del borde repetida a la misma altura en el 30 % de las páginas (mínimo 5) es cabecera o pie. Quedan 0, y los párrafos del libro pasan de 2045 a 1547 (`d2c1d2a`);
+  - una frase sin cerrar sigue en minúscula aunque cambie la fuente o venga sangrada ("la Tabla 1 ha-" / "ciendo n=3"), salvo que el tamaño delate una nota o la línea sea corta, como en un índice. De 42 cortes a 17 en "Cálculo integral", casi todos fórmulas o tablas (`d2c1d2a`).
+- **Verificado en el Pixel (2026-11-02):** el ajuste de leer el código en los dos sentidos, rearrancando en la misma palabra (`ce68df8`).

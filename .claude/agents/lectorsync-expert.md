@@ -36,7 +36,7 @@ Backend: `routes.ts` solo compone; handlers en `routes/*.ts` sin tocar la DB; l�
 - Solo `paused` para la voz (`inactive` la mataba al primer tap, S12), y desde 2026-10-03 ni `paused` si `ReadingAudioHandler` está enganchado: **confirmado por el usuario** que se cortaba al apagar la pantalla.
 - Nada de buscar ancestros en `dispose()`: aborta el desmontaje y el bloc no se cierra (2026-10-03). Streams nunca en `build()`: en `didChangeDependencies` + `_disposed` (2026-07-21).
 - audio_service: `main()` corre antes de los canales de `AudioServiceActivity` (arranque en Kotlin). En pausa el primer plano retenía el wakelock y `stop()` (solo `stopSelf`, servicio enlazado) no lo soltaba: pausa con 5 s de margen; al cerrar, un estado parado + `idle` (2026-10-03).
-- Sliders Web/Desktop: arrastre local y dispatch solo en `onChangeEnd`, o el ghost tick reinicia el audio (S13). Un `ScrollController` nuevo hereda la posición: clave por contenido (2026-10-04).
+- Sliders Web/Desktop: arrastre local y dispatch en `onChangeEnd`, o el ghost tick reinicia el audio (S13). Un `ScrollController` nuevo hereda la posición: clave por contenido (2026-10-04).
 - `copyWith(fontFamily: null)` conserva la familia; `PdfDocumentRef` (pdfrx) en `initState`, no en `build`. Bajo Impeller, un `ColorFilter.matrix` con traslación pinta lo transparente alrededor de la imagen (2026-10-04).
 - `whenComplete(() => map.remove(k))` espera lo que devuelve `remove`, el propio futuro: bloqueo mudo (2026-10-04).
 
@@ -49,11 +49,11 @@ Backend: `routes.ts` solo compone; handlers en `routes/*.ts` sin tocar la DB; l�
 **PDF y fórmulas** (ADR §7 y §13)
 - `extractTextLines` (§13) corta la línea si cambia la altura del glifo, da a veces `fontSize` 1,0 (usar el rectángulo) y deja en código decimal glifos que `extractText` sí traduce ("super31cie" = fi). Plan B: `reflowExtractedText` + `stripPdfNoise`, replicados en `pdf-cleanup.ts`.
 - Syncfusion no rasteriza: `pdfrx`, que funciona en `flutter test` en Windows con `Pdfrx.cacheDirectoryPath`.
-- Calibrar con los PDF reales (`adb exec-out run-as com.lectorsync.lectorsync cat app_flutter/lectorsync_books/<uuid>.pdf`) en una sonda `test/zz_*_test.dart` sin commitear; un fix a ciegas rompió el ciclo de vida (2026-07-21).
+- Calibrar con los PDF reales (`adb exec-out run-as com.lectorsync.lectorsync cat app_flutter/lectorsync_books/<uuid>.pdf`) en una sonda `test/zz_*_test.dart` sin commitear (2026-07-21). Los parsers se juzgan escaneando las cachés de libros enteros: la pantalla no mostró 525 pies colados (2026-11-02).
 
 **Backend y dependencias**
 - `AUDIO_DIR` en `routes/shared.ts` necesita tres `'..'`. `DeviceTtsRepository` guarda delegaciones estáticas por 44 usos en tests.
-- `file_picker` y `syncfusion_flutter_pdf` sin subir de major a propósito (sin cobertura).
+- `file_picker` y `syncfusion_flutter_pdf` sin subir de major.
 - `npm audit fix` sin `--omit=dev` poda las devDependencies; arreglo: `npm install` (2026-10-03).
 
 **Android, Windows y distribución**
