@@ -217,6 +217,65 @@ void main() {
       expect(figures.last.rect!.bottom, greaterThan(190 + 5 * 45.0));
     });
 
+    test('la tabla sigue en la página siguiente hasta donde acaba', () {
+      final blocks = _blocks([
+        ..._filler(0, lines: 2),
+        for (var i = 0; i < 4; i++)
+          _frag(0, 130 + i * 31.0, '${i + 1}.', left: 99, right: 110),
+        _frag(1, 99.3, '5.', left: 99, right: 110),
+        _frag(1, 144, '6.', left: 99, right: 110),
+        _frag(1, 157.5, '7.', left: 99, right: 110),
+        _frag(1, 202, 'Integración por partes', font: 'Albertus', right: 200),
+        ..._filler(1, from: 224, lines: 4),
+        ..._filler(2),
+        ..._filler(3),
+      ]);
+      final figures = [
+        for (final b in blocks)
+          if (b.kind == ChapterBlockKind.figure) b,
+      ];
+
+      expect(figures.map((f) => f.page), [0, 1]);
+      // Llega hasta el borde de la página: puede salirse de los márgenes.
+      expect(figures.first.rect!.bottom, greaterThan(600));
+      expect(figures.last.rect!.top, 0);
+      expect(_texts(blocks, ChapterBlockKind.paragraph),
+          isNot(anyOf(contains('5.'), contains('6.'), contains('7.'))));
+      expect(_texts(blocks, ChapterBlockKind.heading),
+          contains('Integración por partes'));
+    });
+
+    test('filas bajas sin hueco entre ellas también son la tabla', () {
+      final blocks = _blocks([
+        ..._filler(0, lines: 2),
+        for (var i = 0; i < 5; i++)
+          _frag(0, 150 + i * 16.0, '${i + 1}.', left: 99, right: 110),
+        _frag(0, 250, 'Integración por partes', font: 'Albertus', right: 200),
+        _body(0, 272, 'Otro método que se puede usar es el de integración.'),
+        ..._filler(1),
+        ..._filler(2),
+      ]);
+      final figure =
+          blocks.firstWhere((b) => b.kind == ChapterBlockKind.figure);
+
+      expect(_texts(blocks, ChapterBlockKind.paragraph),
+          isNot(anyOf(contains('1.'), contains('5.'))));
+      // La tabla llega hasta el título, no hasta su último número.
+      expect(figure.rect!.bottom, greaterThan(240));
+    });
+
+    test('el número de una lista se une a su frase', () {
+      final blocks = _blocks([
+        ..._filler(0, lines: 4),
+        _frag(0, 170, '1.', left: 71, right: 82),
+        _body(0, 183.5, 'Encontrar el área bajo la curva de la función.',
+            left: 99),
+      ]);
+
+      expect(_texts(blocks, ChapterBlockKind.paragraph),
+          contains('1. Encontrar el área bajo la curva de la función.'));
+    });
+
     test('dos fórmulas con un rótulo entre ellas siguen separadas', () {
       final blocks = _blocks(table(1));
 

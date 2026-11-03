@@ -914,9 +914,28 @@ void _absorbInlineCode(List<_Line> lines, List<_Kind> kinds, _BookProfile p) {
   }
 }
 
+/// Une el número de una lista con su frase: "1." y "Encontrar el área..."
+/// llegan como líneas aparte si el número va en su propia columna.
+List<ChapterBlock> _joinListNumbers(List<ChapterBlock> blocks) {
+  final joined = <ChapterBlock>[];
+  for (final b in blocks) {
+    final prev = joined.isEmpty ? null : joined.last;
+    if (b.kind == ChapterBlockKind.paragraph &&
+        !_rowNumber.hasMatch(b.text) &&
+        prev?.kind == ChapterBlockKind.paragraph &&
+        _rowNumber.hasMatch(prev!.text)) {
+      joined.last = ChapterBlock.paragraph('${prev.text} ${b.text}');
+    } else {
+      joined.add(b);
+    }
+  }
+  return joined;
+}
+
 typedef _BlockSpan = ({int page, double top, double bottom});
 
 final RegExp _longWord = RegExp(r'\p{L}{4,}', unicode: true);
+final RegExp _rowNumber = RegExp(r'^\d{1,3}[.)]$');
 
 /// Junta en una figura las tablas cuyas celdas son dibujo.
 ///
@@ -924,17 +943,60 @@ final RegExp _longWord = RegExp(r'\p{L}{4,}', unicode: true);
 /// números de fila: quedaban como párrafos sueltos ("1.", "2.") entre tiras
 /// recortadas por la mitad de cada fórmula. Tres huecos o más en una página,
 /// separados solo por rótulos, se recortan enteros, rótulos incluidos, y los
-/// rótulos que siguen al último hueco van con ellos.
+/// rótulos que siguen al último hueco van con ellos. Con filas bajas no hay
+/// hueco entre ellas: tres números de fila tras un hueco también valen. Si
+/// debajo hay texto, la tabla llega hasta él. Si la página no tiene
+/// nada más, la tabla llega hasta el borde de la página, sin el pie; y si la
+/// siguiente empieza con más filas, sigue allí desde arriba, aunque sean
+/// pocas. El borde y no el final del texto: una tabla puede salirse de los
+/// márgenes, y con ese tope faltaba una fila en "Cálculo integral".
 List<ChapterBlock> _mergeTableRegions(
   List<ChapterBlock> blocks,
   Map<int, _BlockSpan> spans,
+  _BookProfile p,
+  List<LayoutPageSize> pages,
+  Map<int, List<_Line>> dropped,
 ) {
+  double pageHeight(int page) =>
+      page < pages.length ? pages[page].height : p.textBottom;
+  double pageTop(int page) {
+    var top = 0.0;
+    for (final l in dropped[page] ?? const <_Line>[]) {
+      if (l.unionBottom < pageHeight(page) / 2) {
+        top = math.max(top, l.unionBottom);
+      }
+    }
+    return top;
+  }
+
+  double pageBottom(int page) {
+    var bottom = pageHeight(page);
+    for (final l in dropped[page] ?? const <_Line>[]) {
+      if (l.unionTop > pageHeight(page) / 2) {
+        bottom = math.min(bottom, l.unionTop);
+      }
+    }
+    return bottom;
+  }
+
   bool isLabel(int i, int page) {
     final b = blocks[i];
     return b.kind == ChapterBlockKind.paragraph &&
         spans[i]?.page == page &&
         b.text.length <= _kTableLabelChars &&
         !_longWord.hasMatch(b.text);
+  }
+
+  // Tras el último bloque de la región: sin nada más en la página, la tabla
+  // puede seguir por debajo de su último rótulo.
+  double bottomOf(int last, int page, double bottom) {
+    final next = last + 1;
+    final nextPage = next < blocks.length
+        ? blocks[next].page ?? spans[next]?.page
+        : null;
+    if (nextPage != page) return math.max(bottom, pageBottom(page));
+    final below = spans[next]?.top;
+    return below == null ? bottom : math.max(bottom, below - 0.25 * p.pitch);
   }
 
   final merged = <ChapterBlock>[];
@@ -963,15 +1025,27 @@ List<ChapterBlock> _mergeTableRegions(
       gaps++;
       last = next;
     }
-    if (gaps < _kMinTableGaps) {
-      merged.add(first);
-      i++;
-      continue;
-    }
     var bottom = blocks[last].rect!.bottom;
     while (last + 1 < blocks.length && isLabel(last + 1, page)) {
       last++;
       bottom = math.max(bottom, spans[last]!.bottom);
+    }
+    var rows = 0;
+    for (var k = i; k <= last; k++) {
+      if (_rowNumber.hasMatch(blocks[k].text)) rows++;
+    }
+    // Una tabla que empieza al cambiar de página: los números de fila de la
+    // siguiente cuentan con los de esta.
+    var nextRows = 0;
+    while (last + 1 + nextRows < blocks.length &&
+        isLabel(last + 1 + nextRows, page + 1) &&
+        _rowNumber.hasMatch(blocks[last + 1 + nextRows].text)) {
+      nextRows++;
+    }
+    if (gaps < _kMinTableGaps && rows + nextRows < _kMinTableGaps) {
+      merged.add(first);
+      i++;
+      continue;
     }
     merged.add(ChapterBlock.figure(
       page: page,
@@ -979,12 +1053,45 @@ List<ChapterBlock> _mergeTableRegions(
         first.rect!.left,
         first.rect!.top,
         first.rect!.right,
-        bottom,
+        bottomOf(last, page, bottom),
       ),
       figureKind: FigureKind.figure,
       textHeight: first.textHeight,
     ));
-    i = last + 1;
+
+    // La tabla sigue en las páginas siguientes.
+    var next = last + 1;
+    for (var nextPage = page + 1;; nextPage++) {
+      var end = next;
+      var hasGap = false;
+      var regionBottom = pageTop(nextPage);
+      while (end < blocks.length) {
+        final b = blocks[end];
+        if (isLabel(end, nextPage)) {
+          regionBottom = math.max(regionBottom, spans[end]!.bottom);
+        } else if (b.kind == ChapterBlockKind.figure && b.page == nextPage) {
+          hasGap = true;
+          regionBottom = math.max(regionBottom, b.rect!.bottom);
+        } else {
+          break;
+        }
+        end++;
+      }
+      if (!hasGap && end == next) break;
+      merged.add(ChapterBlock.figure(
+        page: nextPage,
+        rect: PageRect(
+          first.rect!.left,
+          pageTop(nextPage),
+          first.rect!.right,
+          bottomOf(end - 1, nextPage, regionBottom),
+        ),
+        figureKind: FigureKind.figure,
+        textHeight: first.textHeight,
+      ));
+      next = end;
+    }
+    i = next;
   }
   return merged;
 }
@@ -1013,25 +1120,24 @@ List<ChapterBlock> _assemble(
 
   void flush() {
     if (group.isEmpty) return;
+    final before = blocks.length;
     switch (groupKind!) {
       case _Kind.body:
         final text = joinProseLines([for (final l in group) l.text]);
-        if (text.isNotEmpty) {
-          blocks.add(ChapterBlock.paragraph(text));
-          if (group.first.page == group.last.page) {
-            spans[blocks.length - 1] = (
-              page: group.first.page,
-              top: group.first.unionTop,
-              bottom: group.last.unionBottom,
-            );
-          }
-        }
+        if (text.isNotEmpty) blocks.add(ChapterBlock.paragraph(text));
       case _Kind.heading:
         final text = joinProseLines([for (final l in group) l.text]);
         if (text.isNotEmpty) blocks.add(ChapterBlock.heading(text));
       case _Kind.code:
         final text = _codeText(group, p);
         if (text.trim().isNotEmpty) blocks.add(ChapterBlock.code(text));
+    }
+    if (blocks.length > before && group.first.page == group.last.page) {
+      spans[blocks.length - 1] = (
+        page: group.first.page,
+        top: group.first.unionTop,
+        bottom: group.last.unionBottom,
+      );
     }
     group.clear();
     groupKind = null;
@@ -1090,7 +1196,9 @@ List<ChapterBlock> _assemble(
     prev = l;
   }
   flush();
-  return _mergeTableRegions(blocks, spans);
+  return _joinListNumbers(
+    _mergeTableRegions(blocks, spans, p, pages, dropped),
+  );
 }
 
 /// `true` si alguna línea descartada (índice, cabecera) cae dentro del hueco:
