@@ -30,13 +30,13 @@ Backend: `routes.ts` solo compone; handlers en `routes/*.ts` sin tocar la DB; l�
 - Sin word-boundary (Windows, Web): un segmento = una oración; el tracker arranca en `startHandler` (+700 ms de fallback) (S14-16, 2026-07-19).
 - Voces no portables entre plataformas; las `-network` necesitan internet (2026-10-03).
 - just_audio: `playing` sigue en true al terminar → `completedStream`; reutilizar las `StreamAudioSource`; la 0.10.5 no tiene implementación Windows (ni ambiente ni voces de servidor) (2026-10-02/04).
-- Web: ningún `await` entre el tap y `speak()` (S12).
+- Web: sin `await` entre tap y `speak()` (S12).
 
 **Ciclo de vida y widgets**
 - Solo `paused` para la voz (`inactive` la mataba al primer tap, S12), y desde 2026-10-03 ni `paused` si `ReadingAudioHandler` está enganchado: **confirmado por el usuario** que se cortaba al apagar la pantalla.
 - Nada de buscar ancestros en `dispose()`: aborta el desmontaje y el bloc no se cierra (2026-10-03). Streams nunca en `build()`: en `didChangeDependencies` + `_disposed` (2026-07-21).
 - audio_service: `main()` corre antes de los canales de `AudioServiceActivity` (arranque en Kotlin). En pausa el primer plano retenía el wakelock y `stop()` (solo `stopSelf`, servicio enlazado) no lo soltaba: pausa con 5 s de margen; al cerrar, un estado parado + `idle` (2026-10-03).
-- Sliders Web/Desktop: arrastre local y dispatch en `onChangeEnd`, o el ghost tick reinicia el audio (S13). Un `ScrollController` nuevo hereda la posición: clave por contenido (2026-10-04).
+- Sliders Web/Desktop: arrastre local y dispatch en `onChangeEnd`, o el ghost tick reinicia el audio (S13). Un `ScrollController` nuevo hereda la posición: clave por contenido. En una `Column` con hijos condicionales, el `Expanded` sin clave se recrea (2026-11-02).
 - `copyWith(fontFamily: null)` conserva la familia; `PdfDocumentRef` (pdfrx) en `initState`, no en `build`. Bajo Impeller, un `ColorFilter.matrix` con traslación pinta lo transparente alrededor de la imagen (2026-10-04).
 - `whenComplete(() => map.remove(k))` espera lo que devuelve `remove`, el propio futuro: bloqueo mudo (2026-10-04).
 
@@ -52,13 +52,13 @@ Backend: `routes.ts` solo compone; handlers en `routes/*.ts` sin tocar la DB; l�
 - Calibrar con los PDF reales (`adb exec-out run-as com.lectorsync.lectorsync cat app_flutter/lectorsync_books/<uuid>.pdf`) en una sonda `test/zz_*_test.dart` sin commitear (2026-07-21). Los parsers se juzgan escaneando las cachés de libros enteros: la pantalla no mostró 525 pies colados (2026-11-02).
 
 **Backend y dependencias**
-- `AUDIO_DIR` en `routes/shared.ts` necesita tres `'..'`. `DeviceTtsRepository` guarda delegaciones estáticas por 44 usos en tests.
+- `AUDIO_DIR` en `routes/shared.ts` necesita tres `'..'`.
 - `file_picker` y `syncfusion_flutter_pdf` sin subir de major.
 - `npm audit fix` sin `--omit=dev` poda las devDependencies; arreglo: `npm install` (2026-10-03).
 
 **Android, Windows y distribución**
 - Errores de instalación siempre con `adb install` (`--split-per-abi` multiplica el versionCode → `INSTALL_FAILED_VERSION_DOWNGRADE`); `python -m http.server` corrompe APKs (sin Range) (S18).
-- Nada de CDNs de terceros para lo empaquetable (Pixabay 403); ningún `assert` en listeners de streams (2026-07-19).
+- Nada de CDNs de terceros para lo empaquetable; ningún `assert` en listeners de streams (2026-07-19).
 - Plugin nativo en Windows: sonda `flutter run -d windows -t tool/sonda.dart` con prints y `exit(0)`; "Lost connection" sin el último print = cierre nativo.
 
 # Convenciones y comandos
