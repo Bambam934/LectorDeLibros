@@ -805,6 +805,11 @@ bool _looksLikeHeading(_Line l, _Line? prev, _BookProfile p) {
 const _kEdgeRepeatShare = 0.3;
 const _kMinEdgeRepeats = 5;
 
+/// Huecos en una página, separados por rótulos, que ya son una tabla, y
+/// longitud máxima de un rótulo.
+const _kMinTableGaps = 3;
+const _kTableLabelChars = 12;
+
 /// Líneas seguidas en monoespaciada que aún pueden ser parte de una frase.
 const _kInlineCodeLines = 2;
 
@@ -909,6 +914,81 @@ void _absorbInlineCode(List<_Line> lines, List<_Kind> kinds, _BookProfile p) {
   }
 }
 
+typedef _BlockSpan = ({int page, double top, double bottom});
+
+final RegExp _longWord = RegExp(r'\p{L}{4,}', unicode: true);
+
+/// Junta en una figura las tablas cuyas celdas son dibujo.
+///
+/// Si las fórmulas de una tabla no son texto, lo único que se extrae son los
+/// números de fila: quedaban como párrafos sueltos ("1.", "2.") entre tiras
+/// recortadas por la mitad de cada fórmula. Tres huecos o más en una página,
+/// separados solo por rótulos, se recortan enteros, rótulos incluidos, y los
+/// rótulos que siguen al último hueco van con ellos.
+List<ChapterBlock> _mergeTableRegions(
+  List<ChapterBlock> blocks,
+  Map<int, _BlockSpan> spans,
+) {
+  bool isLabel(int i, int page) {
+    final b = blocks[i];
+    return b.kind == ChapterBlockKind.paragraph &&
+        spans[i]?.page == page &&
+        b.text.length <= _kTableLabelChars &&
+        !_longWord.hasMatch(b.text);
+  }
+
+  final merged = <ChapterBlock>[];
+  var i = 0;
+  while (i < blocks.length) {
+    final first = blocks[i];
+    if (first.kind != ChapterBlockKind.figure) {
+      merged.add(first);
+      i++;
+      continue;
+    }
+    final page = first.page!;
+    var last = i;
+    var gaps = 1;
+    while (true) {
+      var next = last + 1;
+      while (next < blocks.length && isLabel(next, page)) {
+        next++;
+      }
+      if (next == last + 1 ||
+          next >= blocks.length ||
+          blocks[next].kind != ChapterBlockKind.figure ||
+          blocks[next].page != page) {
+        break;
+      }
+      gaps++;
+      last = next;
+    }
+    if (gaps < _kMinTableGaps) {
+      merged.add(first);
+      i++;
+      continue;
+    }
+    var bottom = blocks[last].rect!.bottom;
+    while (last + 1 < blocks.length && isLabel(last + 1, page)) {
+      last++;
+      bottom = math.max(bottom, spans[last]!.bottom);
+    }
+    merged.add(ChapterBlock.figure(
+      page: page,
+      rect: PageRect(
+        first.rect!.left,
+        first.rect!.top,
+        first.rect!.right,
+        bottom,
+      ),
+      figureKind: FigureKind.figure,
+      textHeight: first.textHeight,
+    ));
+    i = last + 1;
+  }
+  return merged;
+}
+
 List<ChapterBlock> _assemble(
   List<_Line> lines,
   _BookProfile p,
@@ -927,6 +1007,7 @@ List<ChapterBlock> _assemble(
   _absorbInlineCode(lines, kinds, p);
 
   final blocks = <ChapterBlock>[];
+  final spans = <int, _BlockSpan>{};
   final group = <_Line>[];
   _Kind? groupKind;
 
@@ -935,7 +1016,16 @@ List<ChapterBlock> _assemble(
     switch (groupKind!) {
       case _Kind.body:
         final text = joinProseLines([for (final l in group) l.text]);
-        if (text.isNotEmpty) blocks.add(ChapterBlock.paragraph(text));
+        if (text.isNotEmpty) {
+          blocks.add(ChapterBlock.paragraph(text));
+          if (group.first.page == group.last.page) {
+            spans[blocks.length - 1] = (
+              page: group.first.page,
+              top: group.first.unionTop,
+              bottom: group.last.unionBottom,
+            );
+          }
+        }
       case _Kind.heading:
         final text = joinProseLines([for (final l in group) l.text]);
         if (text.isNotEmpty) blocks.add(ChapterBlock.heading(text));
@@ -1000,7 +1090,7 @@ List<ChapterBlock> _assemble(
     prev = l;
   }
   flush();
-  return blocks;
+  return _mergeTableRegions(blocks, spans);
 }
 
 /// `true` si alguna línea descartada (índice, cabecera) cae dentro del hueco:

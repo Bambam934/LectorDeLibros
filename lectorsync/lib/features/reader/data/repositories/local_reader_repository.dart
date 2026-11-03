@@ -256,9 +256,10 @@ class LocalReaderRepository implements ReaderRepository {
     // se toman por pies de página. v8 (2026-10-04): fórmulas solo en libros
     // con matemáticas, huecos medidos con la letra más alta y sin espacios
     // por solapes ("1 1"). v9 (2026-11-02): la monoespaciada dentro de una
-    // frase no parte el párrafo. Subir esta versión al cambiar cualquier
+    // frase no parte el párrafo. v10 (2026-11-02): las tablas de fórmulas
+    // dibujadas se recortan enteras. Subir esta versión al cambiar cualquier
     // parser, o el fix no se ve en libros ya importados.
-    return '${chapterCacheBase(storedPath)}v9.json';
+    return '${chapterCacheBase(storedPath)}v10.json';
   }
 
   // ---------- format parsers ----------

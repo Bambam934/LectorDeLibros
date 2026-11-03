@@ -195,6 +195,48 @@ void main() {
     });
   });
 
+  group('analyzePdfLayout — tablas de fórmulas dibujadas', () {
+    List<PdfTextFragment> table(int rows) => [
+          ..._filler(0, lines: 4),
+          for (var i = 0; i < rows; i++)
+            _frag(0, 170 + i * 45.0, '${i + 1}.', left: 99, right: 110),
+          _frag(0, 170 + rows * 45.0, '8. 3', left: 99, right: 120),
+          _frag(0, 184 + rows * 45.0, 'x³', left: 99, right: 112),
+        ];
+
+    test('filas con la fórmula en dibujo salen como una sola figura', () {
+      final blocks = _blocks(table(5));
+      final figures = [
+        for (final b in blocks)
+          if (b.kind == ChapterBlockKind.figure) b,
+      ];
+
+      expect(figures, hasLength(1));
+      expect(_texts(blocks, ChapterBlockKind.paragraph),
+          isNot(anyOf(contains('2.'), contains('x³'))));
+      expect(figures.last.rect!.bottom, greaterThan(190 + 5 * 45.0));
+    });
+
+    test('dos fórmulas con un rótulo entre ellas siguen separadas', () {
+      final blocks = _blocks(table(1));
+
+      expect(_texts(blocks, ChapterBlockKind.paragraph), contains('1.'));
+    });
+
+    test('un párrafo con palabras entre fórmulas no es un rótulo', () {
+      final blocks = _blocks([
+        ..._filler(0, lines: 4),
+        _frag(0, 170, 'entonces', left: 99, right: 140),
+        _frag(0, 215, 'luego', left: 99, right: 130),
+        _frag(0, 260, 'además', left: 99, right: 135),
+        _frag(0, 305, 'pues', left: 99, right: 125),
+      ]);
+
+      expect(_texts(blocks, ChapterBlockKind.paragraph),
+          containsAll(['entonces', 'luego', 'además', 'pues']));
+    });
+  });
+
   group('analyzePdfLayout — frases con línea sangrada', () {
     test('la palabra partida con sangría sigue en el párrafo', () {
       final blocks = _blocks([
