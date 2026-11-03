@@ -726,6 +726,13 @@ final RegExp _caption = RegExp(
 /// está siempre en el mismo sitio; un pie de figura, donde caiga la figura.
 /// Por si coinciden, un pie de figura ("Figura 12", "Tabla 3") nunca es una
 /// cabecera.
+///
+/// La zona no basta si el pie va en la fuente del cuerpo: entonces es la
+/// última línea de cada página y marca él mismo dónde acaba el texto. Por
+/// eso, la línea que está en el borde de su página también cuenta si se
+/// repite a la misma altura en buena parte del libro ([_kEdgeRepeatShare]).
+/// En "De animales a dioses", los 525 "www.lectulandia.com - Página N" iban
+/// dentro del texto y la voz los leía.
 Iterable<_Line> _withoutRunningHeads(List<_Line> lines, _BookProfile p) sync* {
   final margin = 0.25 * p.pitch;
   bool inZone(_Line l) =>
@@ -733,18 +740,32 @@ Iterable<_Line> _withoutRunningHeads(List<_Line> lines, _BookProfile p) sync* {
   String signature(_Line l) => '${fontFamily(l.font)}|${_quantize(l.size)}|'
       '${l.text.toLowerCase().replaceAll(_digits, '').replaceAll(_whitespace, ' ').trim()}';
 
+  final topOf = <int, double>{};
+  final bottomOf = <int, double>{};
+  for (final l in lines) {
+    topOf[l.page] = math.min(topOf[l.page] ?? l.unionTop, l.unionTop);
+    bottomOf[l.page] =
+        math.max(bottomOf[l.page] ?? l.unionBottom, l.unionBottom);
+  }
+  bool atEdge(_Line l) =>
+      l.unionTop <= topOf[l.page]! || l.unionBottom >= bottomOf[l.page]!;
+  final edgeRepeats =
+      math.max(_kMinEdgeRepeats, (_kEdgeRepeatShare * topOf.length).ceil());
+
   final bySignature = <String, List<_Line>>{};
   for (final l in lines) {
-    if (inZone(l)) (bySignature[signature(l)] ??= []).add(l);
+    if (inZone(l) || atEdge(l)) (bySignature[signature(l)] ??= []).add(l);
   }
   for (final l in lines) {
-    if (inZone(l) && !_caption.hasMatch(l.text)) {
+    final zone = inZone(l);
+    if ((zone || atEdge(l)) && !_caption.hasMatch(l.text)) {
       final pagesAtSameHeight = {
         for (final other in bySignature[signature(l)]!)
           if ((other.unionTop - l.unionTop).abs() <= 2.5) other.page,
       };
-      final repeated = pagesAtSameHeight.length >= 3;
-      final folio = _pageNumber.hasMatch(l.text) &&
+      final repeated = pagesAtSameHeight.length >= (zone ? 3 : edgeRepeats);
+      final folio = zone &&
+          _pageNumber.hasMatch(l.text) &&
           l.size <= 1.2 * p.bodyHeight;
       if (repeated || folio) {
         l.droppedAsHead = true;
@@ -779,13 +800,39 @@ bool _looksLikeHeading(_Line l, _Line? prev, _BookProfile p) {
   return l.top - prev.bottom >= 0.4 * p.pitch;
 }
 
+/// Parte de las páginas en la que tiene que repetirse una línea del borde
+/// para ser cabecera o pie, y mínimo absoluto.
+const _kEdgeRepeatShare = 0.3;
+const _kMinEdgeRepeats = 5;
+
 /// Líneas seguidas en monoespaciada que aún pueden ser parte de una frase.
 const _kInlineCodeLines = 2;
 
 final RegExp _sentenceEnd = RegExp(r'[.!?:;…»"”)\]]$');
 
+/// Empieza por una palabra en minúscula, sin ser un rótulo ("a)", "b.").
+final RegExp _startsContinuation =
+    RegExp(r'^\p{Ll}+(?![\p{L}\p{N})\.])', unicode: true);
+
 /// `true` si la línea de cuerpo [l] abre párrafo tras la línea [prev].
 bool _startsParagraph(_Line prev, _Line l, _BookProfile p) {
+  final endsSentence = _sentenceEnd.hasMatch(prev.text);
+  final prevShort = prev.right <
+      p.colRightOf(prev.page) - 0.12 * p.colWidthOf(prev.page);
+  if (prev.page == l.page && l.top - prev.top > 1.45 * p.pitch) return true;
+  // Una frase sin cerrar sigue en minúscula aunque la línea venga sangrada o
+  // cambie la fuente ("Solución:" en negrita abre "la Tabla 1 ha-" y sigue
+  // "ciendo n=3" en redonda). El tamaño distinto delata una nota. Con una
+  // línea anterior corta y sin guion puede ser un índice: "NumPy" / "pandas"
+  // no se unen.
+  if (!endsSentence &&
+      (prev.size - l.size).abs() < 0.5 &&
+      _startsContinuation.hasMatch(l.text)) {
+    final reach = prev.right - p.colLeftOf(prev.page);
+    if (prev.text.endsWith('-') || reach >= 0.5 * p.colWidthOf(prev.page)) {
+      return false;
+    }
+  }
   // Otra fuente u otro tamaño: un pie de figura, una cita, una nota. Sin
   // esto, el pie "Figura 39" de la página siguiente se pegaba a la frase
   // que la página anterior dejaba a medias.
@@ -794,14 +841,7 @@ bool _startsParagraph(_Line prev, _Line l, _BookProfile p) {
       _styleKey(prev) != _styleKey(l)) {
     return true;
   }
-  final endsSentence = _sentenceEnd.hasMatch(prev.text);
-  final prevShort = prev.right <
-      p.colRightOf(prev.page) - 0.12 * p.colWidthOf(prev.page);
-  if (prev.page == l.page) {
-    if (l.top - prev.top > 1.45 * p.pitch) return true;
-  } else if (prevShort && endsSentence) {
-    return true;
-  }
+  if (prev.page != l.page && prevShort && endsSentence) return true;
   // Sangría de primera línea, pero solo si la anterior cerraba algo: en una
   // lista con sangría francesa las continuaciones también entran más adentro.
   final indented = l.left - p.colLeftOf(l.page) >= 0.8 * p.bodyHeight;

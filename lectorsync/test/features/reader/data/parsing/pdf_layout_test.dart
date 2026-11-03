@@ -164,6 +164,96 @@ void main() {
     });
   });
 
+  group('analyzePdfLayout — pies en la fuente del cuerpo', () {
+    final pages = [
+      for (var i = 0; i < 8; i++) const LayoutPageSize(439.4, 609.4),
+    ];
+    List<PdfTextFragment> book(String Function(int page) first) => [
+          for (var p = 0; p < 8; p++) ...[
+            _body(p, 99.3, first(p)),
+            ..._filler(p, from: 112.8, lines: 10),
+            _frag(p, 560, 'www.lectulandia.com - Página ${p + 10}',
+                right: 250),
+          ],
+        ];
+
+    test('el pie que se repite en todas las páginas desaparece', () {
+      final blocks = analyzePdfLayout(book((p) => 'Primera línea $p'), pages)!
+          .blocks;
+
+      expect(blocks.map((b) => b.text).join(' '),
+          isNot(contains('lectulandia')));
+    });
+
+    test('lo que abre unas pocas páginas sigue en el texto', () {
+      final blocks = analyzePdfLayout(
+              book((p) => p < 2 ? 'Ejercicio ${p + 1}' : 'Primera línea $p'),
+              pages)!
+          .blocks;
+
+      expect(blocks.map((b) => b.text).join(' '), contains('Ejercicio 1'));
+    });
+  });
+
+  group('analyzePdfLayout — frases con línea sangrada', () {
+    test('la palabra partida con sangría sigue en el párrafo', () {
+      final blocks = _blocks([
+        ..._filler(0),
+        _frag(0, 261.3, 'Solución: aplicamos la fórmula 2 de la Tabla 1 ha-',
+            right: 300),
+        _frag(0, 274.8, 'ciendo n=3', left: 99, right: 160),
+      ]);
+
+      expect(_texts(blocks, ChapterBlockKind.paragraph),
+          contains(contains('Tabla 1 haciendo n=3')));
+    });
+
+    test('el cambio de fuente no corta una frase sin cerrar', () {
+      final blocks = _blocks([
+        ..._filler(0),
+        _frag(0, 261.3, 'Solución: aplicamos la fórmula 2 de la Tabla 1 ha-',
+            font: 'Albertus', right: 370),
+        _frag(0, 274.8, 'ciendo n=3', right: 121),
+      ]);
+
+      expect(
+          blocks.map((b) => b.text).join(' '), contains('Tabla 1 haciendo n=3'));
+    });
+
+    test('una nota más pequeña en minúscula no se pega a la frase', () {
+      final blocks = _blocks([
+        ..._filler(0),
+        _body(0, 261.3, 'Una frase que la página deja sin cerrar con'),
+        _frag(0, 274.8, 'nota a pie de página', size: 8, right: 190),
+      ]);
+
+      expect(_texts(blocks, ChapterBlockKind.paragraph),
+          contains('nota a pie de página'));
+    });
+
+    test('una línea larga sin cerrar sigue en la siguiente', () {
+      final blocks = _blocks([
+        ..._filler(0),
+        _frag(0, 261.3, 'Aplicamos la misma fórmula del ejercicio, esta',
+            right: 300),
+        _frag(0, 274.8, 'vez haciendo n igual a cuatro', left: 99, right: 260),
+      ]);
+
+      expect(_texts(blocks, ChapterBlockKind.paragraph),
+          contains(contains('ejercicio, esta vez haciendo')));
+    });
+
+    test('las entradas cortas de un índice no se unen', () {
+      final blocks = _blocks([
+        ..._filler(0),
+        _frag(0, 261.3, 'NumPy', right: 110),
+        _frag(0, 274.8, 'pandas', left: 99, right: 140),
+      ]);
+
+      expect(_texts(blocks, ChapterBlockKind.paragraph), contains('pandas'));
+    });
+  });
+
   group('analyzePdfLayout — código', () {
     test('reconstruye la sangría por niveles y deja el código en línea en la '
         'prosa', () {
