@@ -740,6 +740,7 @@ final RegExp _tocLeader = RegExp(r'(\.\s?){5,}');
 final RegExp _pageNumber = RegExp(r'^[-–—\s]*(\d{1,4}|[ivxlcdm]{1,7})[-–—\s]*$',
     caseSensitive: false);
 final RegExp _digits = RegExp(r'\d+');
+final RegExp _anyLetter = RegExp(r'\p{L}', unicode: true);
 final RegExp _caption = RegExp(
   r'^(figura|fig\.?|tabla|gr[áa]fic[ao]|imagen|cuadro|ilustraci[óo]n)\s*\d',
   caseSensitive: false,
@@ -797,7 +798,12 @@ Iterable<_Line> _withoutRunningHeads(List<_Line> lines, _BookProfile p) sync* {
         for (final other in bySignature[signature(l)]!)
           if ((other.unionTop - l.unionTop).abs() <= 2.5) other.page,
       };
-      final repeated = pagesAtSameHeight.length >= (zone ? 3 : edgeRepeats);
+      // Sin letras, todos los números de fila ("14.", "3.") son el mismo
+      // texto: el de la primera fila de una página se tomaba por cabecera, y
+      // con él se perdía la fila 14 de una tabla de "Cálculo integral". Los
+      // números de página sueltos los recoge `folio`.
+      final repeated = _anyLetter.hasMatch(l.text) &&
+          pagesAtSameHeight.length >= (zone ? 3 : edgeRepeats);
       final folio = zone &&
           _pageNumber.hasMatch(l.text) &&
           l.size <= 1.2 * p.bodyHeight;
@@ -850,6 +856,9 @@ const _kMinEdgeImageBodies = 2;
 /// longitud máxima de un rótulo.
 const _kMinTableGaps = 3;
 const _kTableLabelChars = 12;
+
+/// Parte de la columna que no alcanza ninguna línea de un párrafo de celda.
+const _kCellReachShare = 0.75;
 
 /// Líneas seguidas en monoespaciada que aún pueden ser parte de una frase.
 const _kInlineCodeLines = 2;
@@ -973,7 +982,9 @@ List<ChapterBlock> _joinListNumbers(List<ChapterBlock> blocks) {
   return joined;
 }
 
-typedef _BlockSpan = ({int page, double top, double bottom});
+/// [narrow]: todas sus líneas, dos o más, acaban antes de [_kCellReachShare]
+/// de la columna, como el texto de una celda.
+typedef _BlockSpan = ({int page, double top, double bottom, bool narrow});
 
 /// Dónde empieza y acaba lo pintable de una página: sus bordes, sin la
 /// cabecera ni el pie descartados.
@@ -1016,7 +1027,8 @@ final RegExp _rowNumber = RegExp(r'^\d{1,3}[.)]$');
 /// Si las fórmulas de una tabla no son texto, lo único que se extrae son los
 /// números de fila: quedaban como párrafos sueltos ("1.", "2.") entre tiras
 /// recortadas por la mitad de cada fórmula. Tres huecos o más en una página,
-/// separados solo por rótulos, se recortan enteros, rótulos incluidos, y los
+/// separados solo por rótulos o por celdas de texto (párrafos de líneas
+/// cortas), se recortan enteros, rótulos incluidos, y los
 /// rótulos que siguen al último hueco van con ellos. Con filas bajas no hay
 /// hueco entre ellas: tres números de fila tras un hueco también valen. Si
 /// debajo hay texto, la tabla llega hasta él. Si la página no tiene
@@ -1037,6 +1049,13 @@ List<ChapterBlock> _mergeTableRegions(
         b.text.length <= _kTableLabelChars &&
         !_longWord.hasMatch(b.text);
   }
+
+  // Una celda de texto entre dos huecos de la tabla: dos líneas cortas
+  // seguidas no las da la prosa justificada.
+  bool isCell(int i, int page) =>
+      blocks[i].kind == ChapterBlockKind.paragraph &&
+      spans[i]?.page == page &&
+      spans[i]!.narrow;
 
   // Tras el último bloque de la región: sin nada más en la página, la tabla
   // puede seguir por debajo de su último rótulo.
@@ -1064,7 +1083,8 @@ List<ChapterBlock> _mergeTableRegions(
     var gaps = 1;
     while (true) {
       var next = last + 1;
-      while (next < blocks.length && isLabel(next, page)) {
+      while (next < blocks.length &&
+          (isLabel(next, page) || isCell(next, page))) {
         next++;
       }
       if (next == last + 1 ||
@@ -1191,6 +1211,10 @@ List<ChapterBlock> _assemble(
         page: group.first.page,
         top: group.first.unionTop,
         bottom: group.last.unionBottom,
+        narrow: group.length >= 2 &&
+            group.every((l) =>
+                l.right - p.colLeftOf(l.page) <
+                _kCellReachShare * p.colWidthOf(l.page)),
       );
     }
     group.clear();

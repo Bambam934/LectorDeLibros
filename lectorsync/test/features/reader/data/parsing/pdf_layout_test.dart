@@ -398,6 +398,51 @@ void main() {
           contains('1. Encontrar el área bajo la curva de la función.'));
     });
 
+    // "Cálculo integral", p. 90: las dos primeras filas son enunciados.
+    List<PdfTextFragment> cells(double right) => [
+          ..._filler(0, lines: 4),
+          for (var i = 0; i < 2; i++) ...[
+            _frag(0, 190 + i * 60.0, '${i + 1}. Encontrar el área bajo la',
+                left: 99, right: right),
+            _frag(0, 203.5 + i * 60.0, 'curva de la función en forma',
+                left: 99, right: right),
+          ],
+          _frag(0, 310, '3.', left: 99, right: 110),
+          _frag(0, 355, '4.', left: 99, right: 110),
+        ];
+
+    test('las celdas de texto entre fórmulas también son la tabla', () {
+      final blocks = _blocks(cells(260));
+      final figures = [
+        for (final b in blocks)
+          if (b.kind == ChapterBlockKind.figure) b,
+      ];
+
+      expect(figures, hasLength(1));
+      expect(_texts(blocks, ChapterBlockKind.paragraph),
+          isNot(anyOf(contains(contains('Encontrar')), contains('3.'))));
+    });
+
+    test('la prosa a todo lo ancho entre fórmulas sigue siendo texto', () {
+      final blocks = _blocks(cells(382.7));
+
+      expect(_texts(blocks, ChapterBlockKind.paragraph),
+          contains(contains('Encontrar')));
+    });
+
+    test('un número de fila arriba de varias páginas no es una cabecera', () {
+      final blocks = _blocks([
+        for (var page = 0; page < 3; page++) ...[
+          _frag(page, 80, '${page + 12}.', left: 99, right: 110),
+          ..._filler(page),
+        ],
+        // El resto empieza donde siempre: los números quedan por encima.
+        for (var page = 3; page < 7; page++) ..._filler(page),
+      ]);
+
+      expect(blocks.map((b) => b.text).join(' '), contains('13.'));
+    });
+
     test('dos fórmulas con un rótulo entre ellas siguen separadas', () {
       final blocks = _blocks(table(1));
 
