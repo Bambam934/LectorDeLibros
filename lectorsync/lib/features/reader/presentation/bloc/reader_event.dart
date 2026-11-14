@@ -53,6 +53,19 @@ class ReaderTtsRestart extends ReaderEvent {
   const ReaderTtsRestart();
 }
 
+/// Salto a [wordIndex] desde los botones anterior y siguiente del sistema.
+/// Si la voz sonaba, sigue desde ahí. A diferencia de
+/// [ReaderWordIndexChanged], no ignora los saltos cortos: un párrafo de dos
+/// palabras ("R: 3") es un salto de dos.
+class ReaderSkippedTo extends ReaderEvent {
+  const ReaderSkippedTo(this.wordIndex);
+
+  final int wordIndex;
+
+  @override
+  List<Object?> get props => [wordIndex];
+}
+
 /// Dispatched by [ReaderBloc] itself when its subscription to the
 /// realtime sync stream surfaces a `progress.updated` event for the
 /// currently open book that ORIGINATED on another device. The handler

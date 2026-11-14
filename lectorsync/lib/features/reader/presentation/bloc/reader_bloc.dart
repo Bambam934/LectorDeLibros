@@ -56,6 +56,7 @@ class ReaderBloc extends Bloc<ReaderEvent, ReaderState> {
     on<ReaderProgressSaved>(_onProgressSaved);
     on<ReaderTtsToggled>(_onTtsToggled);
     on<ReaderTtsRestart>(_onTtsRestart);
+    on<ReaderSkippedTo>(_onSkippedTo);
     on<ReaderRemoteProgressReceived>(_onRemoteProgressReceived);
     on<ReaderRemoteProgressAccepted>(_onRemoteProgressAccepted);
     on<ReaderRemoteProgressDismissed>(_onRemoteProgressDismissed);
@@ -365,7 +366,10 @@ class ReaderBloc extends Bloc<ReaderEvent, ReaderState> {
       return;
     }
 
-    if (state.isTtsActive) {
+    // Con la voz sonando, sigue desde la posición nueva, como al saltar de
+    // párrafo: antes la barra la paraba y había que darle a ▶ otra vez.
+    final speaking = state.isTtsActive;
+    if (speaking) {
       await _ttsRepository.stop();
     }
 
@@ -385,6 +389,7 @@ class ReaderBloc extends Bloc<ReaderEvent, ReaderState> {
       const Duration(milliseconds: 700),
       () => add(const ReaderProgressSaved()),
     );
+    if (speaking) await _speakFrom(currentChapter, newWordIndex);
   }
 
   Future<void> _onProgressSaved(
@@ -435,22 +440,51 @@ class ReaderBloc extends Bloc<ReaderEvent, ReaderState> {
     final words = chapter.words;
     if (words.isEmpty) return;
 
-    debugPrint('[ReaderBloc] _onTtsRestart — '
-        'wordIdx=${state.currentWordIndex}');
+    // La palabra, antes de parar: mientras para, el seguidor aún publica la
+    // que sonaba y la pisaría.
+    final index = state.currentWordIndex;
+    debugPrint('[ReaderBloc] _onTtsRestart — wordIdx=$index');
     await _ttsRepository.stop();
-    await _ensureTtsReady();
+    await _speakFrom(chapter, index);
+  }
 
+  Future<void> _speakFrom(Chapter chapter, int index) async {
+    await _ensureTtsReady();
     _audioTtsRepository?.setContext(
       bookId: state.bookId,
       chapterId: chapter.id,
     );
-
     await _ttsRepository.speak(
       text: chapter.text ?? '',
-      words: words,
-      startWordIndex: state.currentWordIndex,
+      words: chapter.words,
+      startWordIndex: index,
       blocks: chapter.blocks,
     );
+  }
+
+  /// Primero calla la voz y después mueve la posición: al revés, el seguidor
+  /// de la voz publicaba la palabra que aún sonaba mientras paraba, pisaba el
+  /// salto y la voz seguía donde estaba (visto en el Pixel: 1575 → 1869).
+  Future<void> _onSkippedTo(
+    ReaderSkippedTo event,
+    Emitter<ReaderState> emit,
+  ) async {
+    final chapter = state.currentChapter;
+    if (chapter == null) return;
+    final index =
+        event.wordIndex.clamp(0, _maxWordIndexForChapter(chapter)).toInt();
+    final speaking = state.isTtsActive;
+    if (speaking) await _ttsRepository.stop();
+    emit(state.copyWith(
+      currentWordIndex: index,
+      progress: _computeBookProgress(
+        chapters: state.chapters,
+        chapterIndex: state.currentChapterIndex,
+        chapterWordIndex: index,
+      ),
+    ));
+    add(const ReaderProgressSaved());
+    if (speaking) await _speakFrom(chapter, index);
   }
 
   void _onTtsWordIndexUpdated(

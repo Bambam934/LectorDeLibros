@@ -13,6 +13,10 @@ class _FakeCommands implements ReadingCommands {
 
   @override
   Future<void> pause() async => calls.add('pause');
+
+  @override
+  Future<void> skip({required bool forward}) async =>
+      calls.add(forward ? 'next' : 'previous');
 }
 
 void main() {
@@ -82,7 +86,7 @@ void main() {
 
     final state = handler.playbackState.value;
     expect(state.playing, isTrue);
-    expect(state.controls.first, MediaControl.pause);
+    expect(state.controls, contains(MediaControl.pause));
     expect(state.processingState, AudioProcessingState.ready);
   });
 
@@ -96,7 +100,7 @@ void main() {
     await afterGrace();
     final state = handler.playbackState.value;
     expect(state.playing, isFalse);
-    expect(state.controls.first, MediaControl.play);
+    expect(state.controls, contains(MediaControl.play));
   });
 
   test('un salto de capítulo no llega a publicar la pausa', () async {
@@ -117,6 +121,20 @@ void main() {
     await handler.pause();
 
     expect(commands.calls, ['play', 'pause']);
+  });
+
+  test('anterior y siguiente saltan de párrafo, con botones en la '
+      'notificación compacta', () async {
+    attach();
+    await handler.reportPlaying(true);
+    await handler.skipToNext();
+    await handler.skipToPrevious();
+
+    expect(commands.calls, ['next', 'previous']);
+    final state = handler.playbackState.value;
+    expect(state.androidCompactActionIndices!.map((i) => state.controls[i]),
+        [MediaControl.skipToPrevious, MediaControl.pause, MediaControl.skipToNext]);
+    expect(state.playing, isTrue, reason: 'saltar no publica una pausa');
   });
 
   test('pausar desde la notificación es inmediato', () async {

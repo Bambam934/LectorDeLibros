@@ -206,6 +206,48 @@ void main() {
     });
   });
 
+  group('paragraphSkipTarget', () {
+    // Párrafos en 0, 10 y 25; una figura sin palabras comparte el 25.
+    const starts = [0, 10, 25, 25, 40];
+
+    test('siguiente va al principio del párrafo siguiente', () {
+      expect(paragraphSkipTarget(starts, 12, forward: true), 25);
+      expect(paragraphSkipTarget(starts, 0, forward: true), 10);
+    });
+
+    test('siguiente en el último párrafo pide el capítulo siguiente', () {
+      expect(paragraphSkipTarget(starts, 45, forward: true), isNull);
+    });
+
+    test('anterior vuelve al principio del párrafo en curso', () {
+      expect(paragraphSkipTarget(starts, 15, forward: false), 10);
+    });
+
+    test('anterior recién empezado un párrafo va al previo', () {
+      expect(paragraphSkipTarget(starts, 11, forward: false), 0);
+      // La figura no es un párrafo al que volver.
+      expect(paragraphSkipTarget(starts, 40, forward: false), 25);
+      expect(paragraphSkipTarget(starts, 26, forward: false), 10);
+    });
+
+    test('anterior al empezar el capítulo pide el capítulo previo', () {
+      expect(paragraphSkipTarget(starts, 1, forward: false), isNull);
+    });
+  });
+
+  group('playerChapterSubtitle', () {
+    test('sin índice dice en qué capítulo se está', () {
+      expect(playerChapterSubtitle('Sección 2', 1, 6), 'Capítulo 2 de 6');
+      expect(playerChapterSubtitle('Contenido', 0, 1), 'Capítulo 1 de 1');
+    });
+
+    test('con índice usa el título del libro', () {
+      expect(playerChapterSubtitle('Sección 3.2 Límites', 4, 9),
+          'Sección 3.2 Límites');
+      expect(playerChapterSubtitle('El mar', 0, 3), 'El mar');
+    });
+  });
+
   setUp(() {
     SharedPreferences.setMockInitialValues({});
     sl
@@ -320,6 +362,24 @@ void main() {
           reason: 'toque ${i + 1}');
       expect(find.textContaining('Párrafo 50 del capítulo A'), findsOneWidget);
     }
+  });
+
+  testWidgets('mantener pulsado un párrafo lo hace el punto de lectura',
+      (tester) async {
+    await pumpReader(tester, chapters: [_longBlocks('A')]);
+    final bloc =
+        BlocProvider.of<ReaderBloc>(tester.element(find.byType(ListView)));
+    final paragraph = find.textContaining('Párrafo 3 del capítulo A');
+
+    // El toque corto solo va a las barras.
+    await tester.tap(paragraph);
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(bloc.state.currentWordIndex, 0);
+
+    await tester.longPress(paragraph);
+    await tester.pump(const Duration(milliseconds: 100));
+    // Doce palabras por párrafo: el cuarto empieza en la 36.
+    expect(bloc.state.currentWordIndex, 36);
   });
 
   testWidgets('mover la posición sin voz lleva la vista hasta la palabra',

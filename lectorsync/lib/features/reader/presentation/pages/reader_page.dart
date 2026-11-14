@@ -35,6 +35,7 @@ import '../../data/repositories/bookmark_repository.dart';
 import '../../data/repositories/chapter_cache_repository.dart';
 import '../../data/repositories/reading_stats_repository.dart';
 import '../../domain/entities/bookmark.dart';
+import '../../domain/entities/chapter.dart';
 import '../../domain/entities/chapter_block.dart';
 import '../../domain/repositories/reader_repository.dart';
 import '../bloc/reader_bloc.dart';
@@ -460,6 +461,17 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
     if (!context.read<ReaderBloc>().state.isTtsActive) return;
     _followVoice.value = false;
     setState(() => _showReturnButton = true);
+  }
+
+  /// Mantener pulsado un párrafo lo hace el punto de lectura: la voz sigue
+  /// desde su principio, o empezará ahí con ▶. El toque corto sigue mostrando
+  /// u ocultando las barras, y por eso no puede ser él quien mueva la lectura.
+  void _readFrom(int wordIndex) {
+    Haptics.medium();
+    _followVoice.value = true;
+    _lastScrolledParagraphIndex = -1;
+    if (_showReturnButton) setState(() => _showReturnButton = false);
+    context.read<ReaderBloc>().add(ReaderSkippedTo(wordIndex));
   }
 
   /// Vuelve a enganchar el seguidor y re-centra en la palabra que se lee.
@@ -920,7 +932,11 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
 
                     if (chapter.id != _lastChapterId) {
                       _lastChapterId = chapter.id;
-                      _audioHandler?.updateChapter(chapter.title);
+                      _audioHandler?.updateChapter(playerChapterSubtitle(
+                        chapter.title,
+                        state.currentChapterIndex,
+                        state.chapters.length,
+                      ));
                       _lastScrolledParagraphIndex = -1;
                       final oldCtrl = _scrollController;
                       setState(() {
@@ -1358,6 +1374,7 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
       onUserScroll: _onUserScroll,
       paragraphKeys: _paragraphKeys,
       onToggleImmersive: _toggleImmersive,
+      onReadFrom: _readFrom,
       onParagraphKeys: (keys) => _paragraphKeys = keys,
       onWordOffsets: _updateWordOffsets,
       onNavigateChapter: (dir) => _navigateChapter(context, dir),
@@ -1401,6 +1418,7 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
             onUserScroll: _onUserScroll,
             paragraphKeys: _paragraphKeys,
             onToggleImmersive: _toggleImmersive,
+            onReadFrom: _readFrom,
             onParagraphKeys: (keys) => _paragraphKeys = keys,
             onWordOffsets: _updateWordOffsets,
             onNavigateChapter: (dir) => _navigateChapter(context, dir),
@@ -1448,6 +1466,7 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
             onUserScroll: _onUserScroll,
             paragraphKeys: _paragraphKeys,
             onToggleImmersive: _toggleImmersive,
+            onReadFrom: _readFrom,
             onParagraphKeys: (keys) => _paragraphKeys = keys,
             onWordOffsets: _updateWordOffsets,
             onNavigateChapter: (dir) => _navigateChapter(context, dir),
@@ -1571,6 +1590,7 @@ class _ReaderBody extends StatefulWidget {
     required this.onUserScroll,
     required this.paragraphKeys,
     required this.onToggleImmersive,
+    required this.onReadFrom,
     required this.onParagraphKeys,
     required this.onWordOffsets,
     required this.onNavigateChapter,
@@ -1592,6 +1612,9 @@ class _ReaderBody extends StatefulWidget {
   final VoidCallback onUserScroll;
   final List<GlobalKey> paragraphKeys;
   final VoidCallback onToggleImmersive;
+
+  /// Mantener pulsado un párrafo: leer desde su principio.
+  final void Function(int wordIndex) onReadFrom;
   final void Function(List<GlobalKey>) onParagraphKeys;
   final void Function(List<int>) onWordOffsets;
   final void Function(int) onNavigateChapter;
@@ -1664,34 +1687,15 @@ class _ReaderBodyState extends State<_ReaderBody> {
     if (chapter.id == _cachedChapterId) return;
 
     final blocks = chapter.blocks;
-    final List<String> paragraphs;
-    final offsets = <int>[];
-    if (blocks.isNotEmpty) {
-      // Con maquetación, un elemento por bloque: partir el texto por líneas
-      // en blanco rompería el código, que las lleva dentro.
-      paragraphs = [for (final b in blocks) b.text];
-      var cursor = 0;
-      for (final block in blocks) {
-        offsets.add(cursor);
-        cursor += block.wordCount;
-      }
-      // La heurística de fórmulas solo es para los capítulos sin bloques:
-      // aquí enmarcaba hasta los teléfonos de la página de créditos.
-      _cachedFormulas = const [];
-    } else {
-      paragraphs = chapter.paragraphs.isEmpty
-          ? <String>[chapter.text ?? '']
-          : chapter.paragraphs;
-      var cursor = 0;
-      for (final para in paragraphs) {
-        offsets.add(cursor);
-        cursor += para.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).length;
-      }
-      // Se calcula una vez por capítulo: el itemBuilder del ListView corre
-      // en cada frame de scroll y no puede pagar la heurística por párrafo.
-      _cachedFormulas =
-          paragraphs.map(looksLikeFormula).toList(growable: false);
-    }
+    final paragraphs = chapterParagraphs(chapter);
+    final offsets = paragraphWordStarts(chapter);
+    // La heurística de fórmulas solo es para los capítulos sin bloques: con
+    // ellos enmarcaba hasta los teléfonos de la página de créditos. Se calcula
+    // una vez por capítulo: el itemBuilder del ListView corre en cada frame de
+    // scroll y no puede pagar la heurística por párrafo.
+    _cachedFormulas = blocks.isNotEmpty
+        ? const []
+        : paragraphs.map(looksLikeFormula).toList(growable: false);
     _cachedChapterId = chapter.id;
     _cachedParagraphs = paragraphs;
     _cachedBlocks = blocks;
@@ -1885,6 +1889,13 @@ class _ReaderBodyState extends State<_ReaderBody> {
                             );
                           }
                           final paraIndex = index - 1;
+                          // Mantener pulsado: leer desde aquí. El toque corto
+                          // sigue yendo a las barras, por fuera.
+                          Widget readable(Widget child) => GestureDetector(
+                                onLongPress: () =>
+                                    widget.onReadFrom(wordOffsets[paraIndex]),
+                                child: child,
+                              );
                           final endIdx = (paraIndex + 1 < wordOffsets.length)
                               ? wordOffsets[paraIndex + 1] - 1
                               : chapterWordMax - 1;
@@ -1897,7 +1908,7 @@ class _ReaderBodyState extends State<_ReaderBody> {
                           if (block != null &&
                               (block.kind == ChapterBlockKind.code ||
                                   block.kind == ChapterBlockKind.figure)) {
-                            return _WholeBlockHighlight(
+                            return readable(_WholeBlockHighlight(
                               key: itemKey,
                               followVoice: widget.followVoice,
                               recenterRequests: widget.recenterRequests,
@@ -1921,9 +1932,9 @@ class _ReaderBodyState extends State<_ReaderBody> {
                                           onViewSource: () =>
                                               _showFigureSource(context, block),
                                         ),
-                            );
+                            ));
                           }
-                          return _ParagraphHighlightProxy(
+                          return readable(_ParagraphHighlightProxy(
                             key: itemKey,
                             followVoice: widget.followVoice,
                             recenterRequests: widget.recenterRequests,
@@ -1943,7 +1954,7 @@ class _ReaderBodyState extends State<_ReaderBody> {
                                       context,
                                       paragraphs[paraIndex],
                                     ),
-                          );
+                          ));
                         },
                       ),
                     ),
@@ -2054,6 +2065,77 @@ String chapterHeaderTitle(String title, String text) {
   final firstLine = text.trimLeft().split('\n').first;
   return key(firstLine) == key(title) ? '' : title;
 }
+
+/// Los párrafos que pinta el lector. Con maquetación, uno por bloque: partir
+/// el texto por líneas en blanco rompería el código, que las lleva dentro.
+List<String> chapterParagraphs(Chapter chapter) {
+  if (chapter.blocks.isNotEmpty) return [for (final b in chapter.blocks) b.text];
+  return chapter.paragraphs.isEmpty
+      ? <String>[chapter.text ?? '']
+      : chapter.paragraphs;
+}
+
+/// Palabra con la que empieza cada párrafo de [chapterParagraphs]. Sale del
+/// capítulo y no de lo pintado: los botones del sistema la necesitan también
+/// con la pantalla apagada, cuando no se pinta nada.
+List<int> paragraphWordStarts(Chapter chapter) {
+  final starts = <int>[];
+  var cursor = 0;
+  if (chapter.blocks.isNotEmpty) {
+    for (final block in chapter.blocks) {
+      starts.add(cursor);
+      cursor += block.wordCount;
+    }
+  } else {
+    for (final para in chapterParagraphs(chapter)) {
+      starts.add(cursor);
+      cursor += para.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).length;
+    }
+  }
+  return starts;
+}
+
+/// Palabras leídas de un párrafo a partir de las cuales "anterior" vuelve a
+/// su principio en vez de ir al párrafo previo.
+const _kRestartParagraphWords = 3;
+
+/// Destino de los botones anterior y siguiente del sistema: el principio del
+/// párrafo siguiente, o el del actual si ya se leyeron unas palabras de él (si
+/// no, el del previo), como en una lista de canciones. `null` si toca cambiar
+/// de capítulo. Los bloques sin palabras (figuras) comparten principio con el
+/// siguiente y se saltan solos.
+@visibleForTesting
+int? paragraphSkipTarget(
+  List<int> starts,
+  int word, {
+  required bool forward,
+}) {
+  if (forward) {
+    for (final s in starts) {
+      if (s > word) return s;
+    }
+    return null;
+  }
+  final p = lastOffsetAtOrBefore(starts, word);
+  if (p < 0) return null;
+  final current = starts[p];
+  if (word - current >= _kRestartParagraphWords) return current;
+  for (var k = p - 1; k >= 0; k--) {
+    if (starts[k] < current) return starts[k];
+  }
+  return null;
+}
+
+final RegExp _genericChapterTitle = RegExp(r'^(Sección \d+|Contenido)$');
+
+/// Subtítulo del reproductor del sistema. Sin índice en el libro, los
+/// capítulos se llaman "Sección N" (`local_reader_repository.dart`), y en la
+/// notificación eso no dice dónde se está; "Capítulo 2 de 6" sí.
+@visibleForTesting
+String playerChapterSubtitle(String title, int index, int total) =>
+    _genericChapterTitle.hasMatch(title)
+        ? 'Capítulo ${index + 1} de $total'
+        : title;
 
 class _EditorialChapterHeader extends StatelessWidget {
   const _EditorialChapterHeader({
@@ -3754,5 +3836,32 @@ class _BlocReadingCommands implements ReadingCommands {
   Future<void> pause() async {
     if (_bloc.isClosed) return;
     if (_bloc.state.isTtsActive) _bloc.add(const ReaderTtsToggled());
+  }
+
+  /// De párrafo en párrafo; pasado el último, o antes del primero, de
+  /// capítulo. El capítulo previo se abre por el principio.
+  @override
+  Future<void> skip({required bool forward}) async {
+    if (_bloc.isClosed) return;
+    final state = _bloc.state;
+    final chapter = state.currentChapter;
+    if (chapter == null) return;
+    final target = paragraphSkipTarget(
+      paragraphWordStarts(chapter),
+      state.currentWordIndex,
+      forward: forward,
+    );
+    debugPrint('[ReadingAudio] ${forward ? 'siguiente' : 'anterior'}: '
+        'palabra ${state.currentWordIndex} → ${target ?? 'otro capítulo'}');
+    if (target != null) {
+      _bloc.add(ReaderSkippedTo(target));
+      return;
+    }
+    final next = state.currentChapterIndex + (forward ? 1 : -1);
+    if (next < 0 || next >= state.chapters.length) return;
+    _bloc.add(ReaderChapterSelected(
+      state.chapters[next].id,
+      autoPlayTts: state.isTtsActive,
+    ));
   }
 }

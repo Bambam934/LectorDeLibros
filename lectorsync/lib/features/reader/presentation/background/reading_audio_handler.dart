@@ -9,6 +9,9 @@ abstract interface class ReadingCommands {
   Future<void> play();
 
   Future<void> pause();
+
+  /// Al párrafo siguiente o, con [forward] a `false`, al anterior.
+  Future<void> skip({required bool forward});
 }
 
 /// Puente entre los controles del sistema (notificación, pantalla de
@@ -107,6 +110,15 @@ class ReadingAudioHandler extends BaseAudioHandler {
     await _publish(false);
   }
 
+  /// Siguiente y anterior de la notificación, la pantalla de bloqueo o los
+  /// auriculares: de párrafo en párrafo. El estado no cambia aquí: si la voz
+  /// sonaba, se para un instante y vuelve, y [pauseGrace] cubre ese hueco.
+  @override
+  Future<void> skipToNext() async => _commands?.skip(forward: true);
+
+  @override
+  Future<void> skipToPrevious() async => _commands?.skip(forward: false);
+
   /// El ✕ de la notificación: pausa la voz y retira la notificación.
   @override
   Future<void> stop() async {
@@ -181,16 +193,20 @@ class ReadingAudioHandler extends BaseAudioHandler {
 
   PlaybackState _stateFor(bool playing) => PlaybackState(
         controls: [
+          MediaControl.skipToPrevious,
           if (playing) MediaControl.pause else MediaControl.play,
+          MediaControl.skipToNext,
           MediaControl.stop,
         ],
         systemActions: const {
           MediaAction.play,
           MediaAction.pause,
           MediaAction.playPause,
+          MediaAction.skipToNext,
+          MediaAction.skipToPrevious,
           MediaAction.stop,
         },
-        androidCompactActionIndices: const [0, 1],
+        androidCompactActionIndices: const [0, 1, 2],
         processingState: AudioProcessingState.ready,
         playing: playing,
       );
