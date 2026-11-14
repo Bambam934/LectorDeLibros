@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'app_colors.dart';
 
@@ -11,6 +12,18 @@ abstract final class AppTheme {
   static const _radiusS = 8.0;
   static const _radiusM = 12.0;
   static const _radiusL = 16.0;
+
+  /// Barra de gestos de Android del color de lo que queda encima, con iconos
+  /// que contrasten. Va en un [AnnotatedRegion] al pie de cada pantalla.
+  static SystemUiOverlayStyle navigationBar(Color color) =>
+      SystemUiOverlayStyle(
+        systemNavigationBarColor: color,
+        systemNavigationBarDividerColor: color,
+        systemNavigationBarIconBrightness:
+            ThemeData.estimateBrightnessForColor(color) == Brightness.dark
+                ? Brightness.light
+                : Brightness.dark,
+      );
 
   static ThemeData get light {
     final scheme = ColorScheme.fromSeed(

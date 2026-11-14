@@ -16,6 +16,7 @@ import '../../../../core/layout/breakpoints.dart';
 import '../../../../core/storage/local_book_store.dart';
 import '../../../../core/sync/client_id_service.dart';
 import '../../../../core/sync/sync_stream_client.dart';
+import '../../../../core/theme/app_theme.dart';
 import '../../../../core/utils/haptics.dart';
 import '../../../../core/utils/sorted_lookup.dart';
 import '../../../../core/widgets/loading_view.dart';
@@ -842,223 +843,228 @@ class _ReaderViewState extends State<_ReaderView> with WidgetsBindingObserver {
           _OpenSearchIntent: _CallbackAction(() => _openSearch(context)),
           _OpenCustomizationIntent: _CallbackAction(_openCustomizationSheet),
         },
-        child: Scaffold(
-          backgroundColor: colors.background,
-          floatingActionButtonLocation:
-              FloatingActionButtonLocation.centerFloat,
-          floatingActionButton: _showReturnButton
-              ? Padding(
-                  // Elevado sobre la barra de capítulos (Anterior/Siguiente)
-                  // para no taparla.
-                  padding: const EdgeInsets.only(bottom: 68),
-                  child: FloatingActionButton.extended(
-                    onPressed: _returnToReading,
-                    backgroundColor: colors.accent,
-                    foregroundColor: colors.background,
-                    icon: const Icon(Icons.vertical_align_center),
-                    label: const Text('Volver a la lectura'),
+        // La barra de gestos del sistema, con el color del papel: sin esto la
+        // pinta Android en negro, fuera de la app.
+        child: AnnotatedRegion<SystemUiOverlayStyle>(
+          value: AppTheme.navigationBar(colors.background),
+          child: Scaffold(
+            backgroundColor: colors.background,
+            floatingActionButtonLocation:
+                FloatingActionButtonLocation.centerFloat,
+            floatingActionButton: _showReturnButton
+                ? Padding(
+                    // Elevado sobre la barra de capítulos (Anterior/Siguiente)
+                    // para no taparla.
+                    padding: const EdgeInsets.only(bottom: 68),
+                    child: FloatingActionButton.extended(
+                      onPressed: _returnToReading,
+                      backgroundColor: colors.accent,
+                      foregroundColor: colors.background,
+                      icon: const Icon(Icons.vertical_align_center),
+                      label: const Text('Volver a la lectura'),
+                    ),
+                  )
+                : null,
+            appBar: _immersive
+                ? null
+                : AppBar(
+                    backgroundColor: colors.background,
+                    foregroundColor: colors.foreground,
+                    surfaceTintColor: Colors.transparent,
+                    title: Text(
+                      widget.bookTitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: colors.foreground),
+                    ),
+                    actions: _buildAppBarActions(context, bp, colors),
                   ),
-                )
-              : null,
-          appBar: _immersive
-              ? null
-              : AppBar(
-                  backgroundColor: colors.background,
-                  foregroundColor: colors.foreground,
-                  surfaceTintColor: Colors.transparent,
-                  title: Text(
-                    widget.bookTitle,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(color: colors.foreground),
-                  ),
-                  actions: _buildAppBarActions(context, bp, colors),
-                ),
-          drawer: bp.isCompact
-              ? Drawer(
-                  child: SafeArea(
-                    child: _ChapterList(bookTitle: widget.bookTitle),
-                  ),
-                )
-              : null,
-          body: MultiBlocListener(
-            listeners: [
-              // Auto-scroll on chapter change / paragraph transition.
-              BlocListener<ReaderBloc, ReaderState>(
-                listenWhen: (prev, curr) {
-                  if (prev.currentChapter?.id != curr.currentChapter?.id &&
-                      curr.currentChapter != null) {
-                    return true;
-                  }
-                  // Al darle al play la vista va a donde empieza a leer, sin
-                  // esperar a que la voz cambie de párrafo.
-                  if (curr.isTtsActive && !prev.isTtsActive) return true;
-                  // Con voz o sin ella: mover la barra de posición, saltar a
-                  // un marcador o aceptar el progreso de otro dispositivo
-                  // también lleva la vista hasta la palabra.
-                  if (prev.currentWordIndex != curr.currentWordIndex) {
-                    final prevPara = _findParagraphIndex(
-                      prev.currentWordIndex,
-                      _wordOffsets,
-                    );
-                    final currPara = _findParagraphIndex(
-                      curr.currentWordIndex,
-                      _wordOffsets,
-                    );
-                    if (currPara != prevPara) return true;
-                  }
-                  return false;
-                },
-                listener: (context, state) {
-                  final chapter = state.currentChapter;
-                  if (chapter == null) return;
+            drawer: bp.isCompact
+                ? Drawer(
+                    child: SafeArea(
+                      child: _ChapterList(bookTitle: widget.bookTitle),
+                    ),
+                  )
+                : null,
+            body: MultiBlocListener(
+              listeners: [
+                // Auto-scroll on chapter change / paragraph transition.
+                BlocListener<ReaderBloc, ReaderState>(
+                  listenWhen: (prev, curr) {
+                    if (prev.currentChapter?.id != curr.currentChapter?.id &&
+                        curr.currentChapter != null) {
+                      return true;
+                    }
+                    // Al darle al play la vista va a donde empieza a leer, sin
+                    // esperar a que la voz cambie de párrafo.
+                    if (curr.isTtsActive && !prev.isTtsActive) return true;
+                    // Con voz o sin ella: mover la barra de posición, saltar a
+                    // un marcador o aceptar el progreso de otro dispositivo
+                    // también lleva la vista hasta la palabra.
+                    if (prev.currentWordIndex != curr.currentWordIndex) {
+                      final prevPara = _findParagraphIndex(
+                        prev.currentWordIndex,
+                        _wordOffsets,
+                      );
+                      final currPara = _findParagraphIndex(
+                        curr.currentWordIndex,
+                        _wordOffsets,
+                      );
+                      if (currPara != prevPara) return true;
+                    }
+                    return false;
+                  },
+                  listener: (context, state) {
+                    final chapter = state.currentChapter;
+                    if (chapter == null) return;
 
-                  if (chapter.id != _lastChapterId) {
-                    _lastChapterId = chapter.id;
-                    _audioHandler?.updateChapter(chapter.title);
-                    _lastScrolledParagraphIndex = -1;
-                    final oldCtrl = _scrollController;
-                    setState(() {
-                      // Sin `keepScrollOffset`: el controlador nuevo recuperaba
-                      // de PageStorage el desplazamiento del capítulo anterior,
-                      // y el siguiente se abría a media pantalla.
-                      _scrollController =
-                          ScrollController(keepScrollOffset: false);
-                    });
-                    oldCtrl?.dispose();
-                    // Al abrir el libro, la palabra guardada puede quedar lejos
-                    // del principio del capítulo: la vista va hasta ella sin
-                    // esperar a que suene la voz.
-                    final target = state.currentWordIndex;
-                    if (target > 0) {
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        if (mounted) _scrollToParagraph(target);
+                    if (chapter.id != _lastChapterId) {
+                      _lastChapterId = chapter.id;
+                      _audioHandler?.updateChapter(chapter.title);
+                      _lastScrolledParagraphIndex = -1;
+                      final oldCtrl = _scrollController;
+                      setState(() {
+                        // Sin `keepScrollOffset`: el controlador nuevo recuperaba
+                        // de PageStorage el desplazamiento del capítulo anterior,
+                        // y el siguiente se abría a media pantalla.
+                        _scrollController =
+                            ScrollController(keepScrollOffset: false);
                       });
+                      oldCtrl?.dispose();
+                      // Al abrir el libro, la palabra guardada puede quedar lejos
+                      // del principio del capítulo: la vista va hasta ella sin
+                      // esperar a que suene la voz.
+                      final target = state.currentWordIndex;
+                      if (target > 0) {
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          if (mounted) _scrollToParagraph(target);
+                        });
+                      }
+                      return;
                     }
-                    return;
+
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (mounted) _scrollToParagraph(state.currentWordIndex);
+                    });
+                  },
+                ),
+                // Remote-progress arrival → "Continuando desde otro
+                // dispositivo" snackbar with an action to jump. The
+                // bloc only puts a `pendingRemoteProgress` into state if
+                // the event passed all filters (right book, not our own
+                // echo, not older than our last local save), so showing
+                // a banner whenever this field flips from null→set is
+                // the right trigger.
+                BlocListener<ReaderBloc, ReaderState>(
+                  listenWhen: (prev, curr) =>
+                      prev.pendingRemoteProgress != curr.pendingRemoteProgress &&
+                      curr.pendingRemoteProgress != null,
+                  listener: (context, state) {
+                    final pending = state.pendingRemoteProgress!;
+                    final bloc = context.read<ReaderBloc>();
+                    final messenger = ScaffoldMessenger.of(context);
+                    // Clear any older sync-snackbar so two devices
+                    // updating fast don't stack banners.
+                    messenger.clearSnackBars();
+                    // Auto-resolves to "dismissed" if the user does
+                    // nothing for 8 seconds — keeps a stale banner from
+                    // sitting forever.
+                    final controller = messenger.showSnackBar(
+                      SnackBar(
+                        duration: const Duration(seconds: 8),
+                        behavior: SnackBarBehavior.floating,
+                        content: Row(
+                          children: [
+                            const Icon(
+                              Icons.devices_rounded,
+                              size: 20,
+                              color: Colors.white,
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                'Continuando desde otro dispositivo '
+                                '(palabra ${pending.wordIndex})',
+                              ),
+                            ),
+                          ],
+                        ),
+                        action: SnackBarAction(
+                          label: 'Ir allí',
+                          onPressed: () =>
+                              bloc.add(const ReaderRemoteProgressAccepted()),
+                        ),
+                      ),
+                    );
+                    controller.closed.then((reason) {
+                      if (!bloc.isClosed &&
+                          reason != SnackBarClosedReason.action &&
+                          bloc.state.pendingRemoteProgress == pending) {
+                        bloc.add(const ReaderRemoteProgressDismissed());
+                      }
+                    });
+                  },
+                ),
+              ],
+              child: BlocConsumer<ReaderBloc, ReaderState>(
+                listenWhen: (prev, curr) =>
+                    curr.errorMessage != null &&
+                    prev.errorMessage != curr.errorMessage,
+                listener: (context, state) {
+                  final message = state.errorMessage;
+                  if (message == null) return;
+                  ScaffoldMessenger.of(
+                    context,
+                  ).showSnackBar(SnackBar(content: Text(message)));
+                },
+                buildWhen: (prev, curr) =>
+                    prev.status != curr.status ||
+                    prev.currentChapter?.id != curr.currentChapter?.id ||
+                    prev.currentChapterIndex != curr.currentChapterIndex ||
+                    prev.chapters.length != curr.chapters.length,
+                builder: (context, state) {
+                  if (state.status == ReaderStatus.loading &&
+                      state.currentChapter == null) {
+                    // Primera apertura: se está extrayendo el texto del
+                    // archivo y partiéndolo en capítulos. En un PDF largo son
+                    // varios segundos, y merece la pena decir que solo pasa
+                    // una vez en lugar de dejar un spinner mudo.
+                    return LoadingView(
+                      message: 'Preparando el libro',
+                      detail: 'Se analiza el archivo y se divide en capítulos. '
+                          'La próxima vez abrirá al instante.',
+                      color: colors.foreground,
+                    );
                   }
 
-                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                    if (mounted) _scrollToParagraph(state.currentWordIndex);
-                  });
+                  if (state.chapters.isEmpty) {
+                    return Center(
+                      child: Text(
+                        'Este libro no tiene capítulos disponibles.',
+                        style: TextStyle(color: colors.foreground),
+                      ),
+                    );
+                  }
+
+                  final chapter = state.currentChapter;
+                  if (chapter == null) {
+                    return Center(
+                      child: Text(
+                        'No se pudo cargar el capítulo actual.',
+                        style: TextStyle(color: colors.foreground),
+                      ),
+                    );
+                  }
+
+                  return bp.when(
+                    compact: () =>
+                        _buildCompactBody(context, state, prefs, colors),
+                    medium: () => _buildMediumBody(context, state, prefs, colors),
+                    expanded: () =>
+                        _buildExpandedBody(context, state, prefs, colors),
+                  );
                 },
               ),
-              // Remote-progress arrival → "Continuando desde otro
-              // dispositivo" snackbar with an action to jump. The
-              // bloc only puts a `pendingRemoteProgress` into state if
-              // the event passed all filters (right book, not our own
-              // echo, not older than our last local save), so showing
-              // a banner whenever this field flips from null→set is
-              // the right trigger.
-              BlocListener<ReaderBloc, ReaderState>(
-                listenWhen: (prev, curr) =>
-                    prev.pendingRemoteProgress != curr.pendingRemoteProgress &&
-                    curr.pendingRemoteProgress != null,
-                listener: (context, state) {
-                  final pending = state.pendingRemoteProgress!;
-                  final bloc = context.read<ReaderBloc>();
-                  final messenger = ScaffoldMessenger.of(context);
-                  // Clear any older sync-snackbar so two devices
-                  // updating fast don't stack banners.
-                  messenger.clearSnackBars();
-                  // Auto-resolves to "dismissed" if the user does
-                  // nothing for 8 seconds — keeps a stale banner from
-                  // sitting forever.
-                  final controller = messenger.showSnackBar(
-                    SnackBar(
-                      duration: const Duration(seconds: 8),
-                      behavior: SnackBarBehavior.floating,
-                      content: Row(
-                        children: [
-                          const Icon(
-                            Icons.devices_rounded,
-                            size: 20,
-                            color: Colors.white,
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Text(
-                              'Continuando desde otro dispositivo '
-                              '(palabra ${pending.wordIndex})',
-                            ),
-                          ),
-                        ],
-                      ),
-                      action: SnackBarAction(
-                        label: 'Ir allí',
-                        onPressed: () =>
-                            bloc.add(const ReaderRemoteProgressAccepted()),
-                      ),
-                    ),
-                  );
-                  controller.closed.then((reason) {
-                    if (!bloc.isClosed &&
-                        reason != SnackBarClosedReason.action &&
-                        bloc.state.pendingRemoteProgress == pending) {
-                      bloc.add(const ReaderRemoteProgressDismissed());
-                    }
-                  });
-                },
-              ),
-            ],
-            child: BlocConsumer<ReaderBloc, ReaderState>(
-              listenWhen: (prev, curr) =>
-                  curr.errorMessage != null &&
-                  prev.errorMessage != curr.errorMessage,
-              listener: (context, state) {
-                final message = state.errorMessage;
-                if (message == null) return;
-                ScaffoldMessenger.of(
-                  context,
-                ).showSnackBar(SnackBar(content: Text(message)));
-              },
-              buildWhen: (prev, curr) =>
-                  prev.status != curr.status ||
-                  prev.currentChapter?.id != curr.currentChapter?.id ||
-                  prev.currentChapterIndex != curr.currentChapterIndex ||
-                  prev.chapters.length != curr.chapters.length,
-              builder: (context, state) {
-                if (state.status == ReaderStatus.loading &&
-                    state.currentChapter == null) {
-                  // Primera apertura: se está extrayendo el texto del
-                  // archivo y partiéndolo en capítulos. En un PDF largo son
-                  // varios segundos, y merece la pena decir que solo pasa
-                  // una vez en lugar de dejar un spinner mudo.
-                  return LoadingView(
-                    message: 'Preparando el libro',
-                    detail: 'Se analiza el archivo y se divide en capítulos. '
-                        'La próxima vez abrirá al instante.',
-                    color: colors.foreground,
-                  );
-                }
-
-                if (state.chapters.isEmpty) {
-                  return Center(
-                    child: Text(
-                      'Este libro no tiene capítulos disponibles.',
-                      style: TextStyle(color: colors.foreground),
-                    ),
-                  );
-                }
-
-                final chapter = state.currentChapter;
-                if (chapter == null) {
-                  return Center(
-                    child: Text(
-                      'No se pudo cargar el capítulo actual.',
-                      style: TextStyle(color: colors.foreground),
-                    ),
-                  );
-                }
-
-                return bp.when(
-                  compact: () =>
-                      _buildCompactBody(context, state, prefs, colors),
-                  medium: () => _buildMediumBody(context, state, prefs, colors),
-                  expanded: () =>
-                      _buildExpandedBody(context, state, prefs, colors),
-                );
-              },
             ),
           ),
         ),
@@ -1716,7 +1722,6 @@ class _ReaderBodyState extends State<_ReaderBody> {
     final state = widget.state;
     final prefs = widget.prefs;
     final colors = widget.colors;
-    final scheme = Theme.of(context).colorScheme;
 
     final chapter = state.currentChapter;
     if (chapter == null) {
@@ -1951,7 +1956,12 @@ class _ReaderBodyState extends State<_ReaderBody> {
                 canPrev: state.currentChapterIndex > 0,
                 canNext: state.currentChapterIndex < state.chapters.length - 1,
                 foreground: colors.foreground,
-                background: scheme.surfaceContainerHighest,
+                // Del tema de lectura, no del de la app: con la app oscura y
+                // el papel claro, la barra quedaba como una franja negra.
+                background: Color.alphaBlend(
+                  colors.foreground.withValues(alpha: 0.04),
+                  colors.background,
+                ),
                 onPrev: () => widget.onNavigateChapter(-1),
                 onNext: () => widget.onNavigateChapter(1),
               ),
@@ -2995,36 +3005,40 @@ class _ChapterNavBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SafeArea(
-      top: false,
+    // El color va por fuera del SafeArea, y la barra de gestos lo sigue.
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: AppTheme.navigationBar(background),
       child: Container(
         decoration: BoxDecoration(
           color: background,
           border: Border(
-            top: BorderSide(
-              color: Theme.of(context).colorScheme.outlineVariant,
-            ),
+            top: BorderSide(color: foreground.withValues(alpha: 0.12)),
           ),
         ),
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-        child: Row(
-          children: [
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: canPrev ? onPrev : null,
-                icon: const Icon(Icons.chevron_left_rounded),
-                label: const Text('Anterior'),
-              ),
+        child: SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+            child: Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: canPrev ? onPrev : null,
+                    icon: const Icon(Icons.chevron_left_rounded),
+                    label: const Text('Anterior'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: canNext ? onNext : null,
+                    icon: const Icon(Icons.chevron_right_rounded),
+                    label: const Text('Siguiente'),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: FilledButton.icon(
-                onPressed: canNext ? onNext : null,
-                icon: const Icon(Icons.chevron_right_rounded),
-                label: const Text('Siguiente'),
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     );

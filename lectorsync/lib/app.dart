@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import 'core/di/injection_container.dart';
@@ -60,6 +61,15 @@ class LectorSyncApp extends StatelessWidget {
                       themeState.isWarm ? AppTheme.warm : AppTheme.dark,
                   themeMode: themeState.themeMode,
                   routerConfig: router,
+                  // Fuera del lector, la barra de gestos va con el tema de
+                  // la app; si no, se quedaba con el papel del último libro.
+                  builder: (context, child) =>
+                      AnnotatedRegion<SystemUiOverlayStyle>(
+                    value: AppTheme.navigationBar(
+                      Theme.of(context).colorScheme.surface,
+                    ),
+                    child: child!,
+                  ),
                 );
               },
             );
