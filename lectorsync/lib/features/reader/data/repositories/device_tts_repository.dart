@@ -57,6 +57,9 @@ class DeviceTtsRepository implements TtsRepository {
   List<int> _charOffsets = [];
   int _startOffset = 0;
 
+  /// Texto del enunciado que suena: los avisos de progreso de otro se ignoran.
+  String? _spokenText;
+
   List<SpeakSegment> _pendingSegments = [];
   int _currentSegmentIndex = 0;
   bool _isSegmentSpeaking = false;
@@ -405,6 +408,18 @@ class DeviceTtsRepository implements TtsRepository {
 
       tts.setProgressHandler((text, start, end, word) {
         if (_charOffsets.isEmpty) return;
+        // Un aviso tardío del enunciado anterior, tras parar o ya con otro
+        // segmento sonando, traía su posición a unas cifras que no eran las
+        // suyas. Android manda el texto de su enunciado
+        // (`FlutterTtsPlugin.kt`, onProgress), y aquí se compara; en
+        // escritorio los avisos solo resincronizan y no se tocan.
+        if (_stopRequested) return;
+        if (_adapter.capabilities.supportsWordBoundary &&
+            text.isNotEmpty &&
+            _spokenText != null &&
+            text != _spokenText) {
+          return;
+        }
 
         final adapter = _adapter;
         if (adapter is WebTtsAdapter) {
@@ -818,6 +833,7 @@ class DeviceTtsRepository implements TtsRepository {
         // segment with a sliced text.
         if (_recoveryPending) break;
 
+        _spokenText = textToSpeak;
         final speakResult = await _adapter.speak(textToSpeak);
         debugPrint('[DeviceTTS] speak returned: $speakResult '
             'attempt=$attempt '

@@ -69,6 +69,12 @@ class TtsRepositoryProxy implements TtsRepository {
   /// between `interrupted` and `resumed` callbacks.
   bool _frozen = false;
 
+  /// Entre un [stop] y el [speak] siguiente no se publica ninguna palabra: lo
+  /// que llegue es de la posición vieja (la palabra que quedaba pendiente, un
+  /// aviso tardío del motor) y pisaba la nueva al saltar de párrafo, cambiar
+  /// de capítulo o relanzar la voz (visto en el Pixel: 1575 → 1869).
+  bool _stopped = false;
+
   TtsRepository get _activeRepo =>
       _mode == TtsMode.device ? _device : _audio;
 
@@ -107,7 +113,7 @@ class TtsRepositoryProxy implements TtsRepository {
     }
 
   _wordSub = repo.wordIndexStream.listen((idx) {
-    if (_wordCtrl.isClosed) return;
+    if (_wordCtrl.isClosed || _stopped) return;
 
     final delta = idx - _lastEmittedWordIdx;
     // Un delta grande = reposicionamiento del usuario (slider, marcador, botón
@@ -192,7 +198,7 @@ class TtsRepositoryProxy implements TtsRepository {
         // and must NOT be flushed. Discarding it here prevents the
         // visible jump of "se salta varios párrafos" when an
         // utterance overflows on Web Speech.
-        if (_frozen) {
+        if (_frozen || _stopped) {
           _pendingWordIdx = -1;
         } else if (_pendingWordIdx >= 0 && !_wordCtrl.isClosed) {
           _lastEmittedWordIdx = _pendingWordIdx;
@@ -241,7 +247,7 @@ class TtsRepositoryProxy implements TtsRepository {
     final modeChanged = _mode != newMode;
     if (!modeChanged && voiceId == null) return;
 
-    await _activeRepo.stop();
+    await stop();
 
     if (modeChanged) {
       _mode = newMode;
@@ -262,16 +268,25 @@ class TtsRepositoryProxy implements TtsRepository {
     required List<String> words,
     int startWordIndex = 0,
     List<ChapterBlock> blocks = const [],
-  }) =>
-      _activeRepo.speak(
-        text: text,
-        words: words,
-        startWordIndex: startWordIndex,
-        blocks: blocks,
-      );
+  }) {
+    _stopped = false;
+    return _activeRepo.speak(
+      text: text,
+      words: words,
+      startWordIndex: startWordIndex,
+      blocks: blocks,
+    );
+  }
 
   @override
-  Future<Either<Failure, Unit>> stop() => _activeRepo.stop();
+  Future<Either<Failure, Unit>> stop() {
+    _stopped = true;
+    _wordFrameTimer?.cancel();
+    _wordFrameTimer = null;
+    _pendingWordIdx = -1;
+    _cancelCatchUp();
+    return _activeRepo.stop();
+  }
 
   @override
   Future<Either<Failure, Unit>> setLanguage(String languageCode) =>
