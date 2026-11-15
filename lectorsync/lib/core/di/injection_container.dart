@@ -378,6 +378,8 @@ Future<void> _registerBackgroundReading() async {
         // capítulo con la pantalla apagada no llega a pausar gracias al
         // margen de ReadingAudioHandler.
         androidStopForegroundOnPause: true,
+        // Silueta del icono de la app; sin ella salía el logo de Flutter.
+        androidNotificationIcon: 'drawable/ic_stat_lectorsync',
       ),
     );
     handler.bindInterruptions(
