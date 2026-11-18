@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
+import { parseAudioFileName, signedAudioUrl, verifyAudioSignature } from '../../../core/audio-url.js';
 import { requireAccessToken } from '../../../core/auth.js';
 import { env } from '../../../core/env.js';
 import { getAuthenticatedUser } from '../../../core/jwt.js';
@@ -15,7 +16,6 @@ import {
   bookParamsSchema,
   dbUnavailableReply,
   getAudioFilePath,
-  getAudioUrlPath,
   isDbConnectionError,
   readClientId,
   saveAudioFile
@@ -45,6 +45,12 @@ const saveProgressSchema = z.object({
   chapter_id: z.string().uuid(),
   word_index: z.number().int().min(0),
   audio_position_ms: z.number().int().min(0)
+});
+
+const audioQuerySchema = z.object({
+  u: z.string().uuid(),
+  exp: z.coerce.number().int().positive(),
+  sig: z.string().min(1).max(100)
 });
 
 const audioParamsSchema = z.object({
@@ -265,7 +271,7 @@ export function registerReaderRoutes(app: FastifyInstance): void {
           book_id: params.bookId,
           chapter_id: params.chapterId,
           provider: providerName,
-          audio_url: fileExists ? getAudioUrlPath(params.chapterId, voiceId) : null,
+          audio_url: fileExists ? signedAudioUrl(params.chapterId, voiceId, authUser.sub) : null,
           duration_ms: cachedAudio[0].durationMs,
           word_timestamps: cachedAudio[0].wordTimestamps,
           source: 'cache'
@@ -303,7 +309,7 @@ export function registerReaderRoutes(app: FastifyInstance): void {
       }
 
       const audioUrlPath = result.audioBuffer.length > 0
-        ? getAudioUrlPath(params.chapterId, voiceId)
+        ? signedAudioUrl(params.chapterId, voiceId, authUser.sub)
         : null;
 
       if (result.audioBuffer.length > 0) {
@@ -316,7 +322,8 @@ export function registerReaderRoutes(app: FastifyInstance): void {
           chapterId: params.chapterId,
           voiceId,
           ttsProvider: providerName,
-          audioKey: audioUrlPath ?? '',
+          // La clave del archivo, sin firma: la firma caduca y es por usuario.
+          audioKey: audioUrlPath ? `${params.chapterId}-${voiceId}.mp3` : '',
           durationMs: result.durationMs,
           wordTimestamps: result.wordTimestamps
         });
@@ -443,13 +450,28 @@ export function registerReaderRoutes(app: FastifyInstance): void {
     }
   });
 
-  app.get('/api/v1/audio/:chapterId-:voiceId.mp3', { preHandler: requireAccessToken }, async (request, reply) => {
-    const params = audioParamsSchema.parse(request.params);
-    const authUser = getAuthenticatedUser(request);
-    const db = getDb();
+  // Sin JWT: el reproductor no manda cabeceras. Autoriza la firma de la URL,
+  // emitida por el POST de arriba tras comprobar que el libro es del usuario
+  // (ver core/audio-url.ts).
+  app.get('/api/v1/audio/:fileName', async (request, reply) => {
+    const parsedName = parseAudioFileName((request.params as { fileName: string }).fileName);
+    const query = audioQuerySchema.safeParse(request.query);
+    if (!parsedName || !query.success) {
+      return reply.code(404).send({ error: 'NotFound', message: 'Audio no encontrado.' });
+    }
+    const params = audioParamsSchema.parse(parsedName);
+    const { u: userId, exp, sig } = query.data;
+    if (!verifyAudioSignature(params.chapterId, params.voiceId, userId, exp, sig)) {
+      return reply.code(403).send({
+        error: 'Forbidden',
+        message: 'Enlace de audio inválido o caducado.'
+      });
+    }
 
-    // El JWT solo dice quién es; el capítulo tiene que ser de un libro suyo.
-    // Sin base de datos no hay forma de comprobarlo: no se sirve nada.
+    const db = getDb();
+    // Además de la firma, el capítulo tiene que seguir siendo de un libro del
+    // usuario (si borró el libro, el enlace deja de valer). Sin base de datos
+    // no hay forma de comprobarlo: no se sirve nada.
     if (!db) {
       return reply.code(503).send(dbUnavailableReply());
     }
@@ -458,7 +480,7 @@ export function registerReaderRoutes(app: FastifyInstance): void {
         .select({ id: chapters.id })
         .from(chapters)
         .innerJoin(books, eq(books.id, chapters.bookId))
-        .where(and(eq(chapters.id, params.chapterId), eq(books.userId, authUser.sub)))
+        .where(and(eq(chapters.id, params.chapterId), eq(books.userId, userId)))
         .limit(1);
       if (!owned[0]) {
         return reply.code(404).send({

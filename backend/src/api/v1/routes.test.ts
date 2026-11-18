@@ -4,6 +4,7 @@ import { describe, it } from 'node:test';
 import fs from 'node:fs';
 
 import { buildApp } from '../../app.js';
+import { signedAudioUrl } from '../../core/audio-url.js';
 import { getAudioFilePath, saveAudioFile } from './routes/shared.js';
 import { getDb } from '../../db/client.js';
 import { users } from '../../db/schema.js';
@@ -408,6 +409,64 @@ describe('API v1 auth and protected routes', () => {
  await app.close();
  });
 
+ it('serves chapter audio through the signed URL to its owner only', async () => {
+ const app = await buildApp();
+ const { accessToken, dbAvailable } = await getAccessTokenForTest(app, 'audioown');
+ if (!dbAvailable) {
+ await app.close();
+ return;
+ }
+ const auth = { authorization: `Bearer ${accessToken}` };
+
+ const boundary = '----audioown';
+ const imported = await app.inject({
+ method: 'POST',
+ url: '/api/v1/library/import',
+ headers: { ...auth, 'content-type': `multipart/form-data; boundary=${boundary}` },
+ payload: [
+ `--${boundary}`,
+ 'Content-Disposition: form-data; name="file"; filename="libro.txt"',
+ 'Content-Type: text/plain',
+ '',
+ 'Capítulo uno con unas cuantas palabras para leer en voz alta.',
+ `--${boundary}--`,
+ ''
+ ].join('\r\n')
+ });
+ assert.equal(imported.statusCode, 201, imported.body);
+ const bookId = imported.json().id as string;
+ const chapterList = await app.inject({ method: 'GET', url: `/api/v1/books/${bookId}/chapters`, headers: auth });
+ const chapterId = chapterList.json()[0].id as string;
+ const audioUrl = `/api/v1/books/${bookId}/chapters/${chapterId}/audio`;
+
+ // El proveedor simulado no produce audio: se deja un mp3 en disco y la
+ // segunda petición sale de la caché con su URL firmada.
+ await app.inject({ method: 'POST', url: audioUrl, headers: auth, payload: { voice_id: 'voz-propia' } });
+ const filePath = getAudioFilePath(chapterId, 'voz-propia');
+ await saveAudioFile(filePath, Buffer.from('ID3 audio propio'));
+ try {
+ const cached = await app.inject({ method: 'POST', url: audioUrl, headers: auth, payload: { voice_id: 'voz-propia' } });
+ assert.equal(cached.json().source, 'cache');
+ const signedUrl = cached.json().audio_url as string;
+ assert.match(signedUrl, /^\/api\/v1\/audio\/.+\.mp3\?.*sig=/);
+
+ // Sin cabeceras, como lo pide el reproductor.
+ const download = await app.inject({ method: 'GET', url: signedUrl });
+ assert.equal(download.statusCode, 200);
+ assert.equal(download.headers['content-type'], 'audio/mpeg');
+ assert.equal(download.body, 'ID3 audio propio');
+
+ // Borrado el libro, el enlace deja de valer aunque la firma no haya caducado.
+ const deleted = await app.inject({ method: 'DELETE', url: `/api/v1/books/${bookId}`, headers: auth });
+ assert.equal(deleted.statusCode, 204);
+ const afterDelete = await app.inject({ method: 'GET', url: signedUrl });
+ assert.equal(afterDelete.statusCode, 404);
+ } finally {
+ await fs.promises.rm(filePath, { force: true });
+ await app.close();
+ }
+ });
+
  it('does not serve audio files of chapters the user does not own', async () => {
  const app = await buildApp();
  const chapterId = crypto.randomUUID();
@@ -419,15 +478,31 @@ describe('API v1 auth and protected routes', () => {
  { sub: crypto.randomUUID(), email: 'intruso@lectorsync.test', type: 'access' },
  { expiresIn: '15m' }
  );
- const res = await app.inject({
+ const plainUrl = `/api/v1/audio/${chapterId}-${voiceId}.mp3`;
+
+ // Sin firma (aunque lleve un JWT válido): no se sirve.
+ const unsigned = await app.inject({
  method: 'GET',
- url: `/api/v1/audio/${chapterId}-${voiceId}.mp3`,
+ url: plainUrl,
  headers: { authorization: `Bearer ${token}` }
  });
- // Nunca el archivo: 404 (no es suyo), 503 (sin DB) o 400 (la ruta
- // corta `:chapterId` en el primer guion del UUID; ver el reporte).
- assert.notEqual(res.statusCode, 200);
+ assert.equal(unsigned.statusCode, 404);
+
+ // Firma de otro capítulo pegada a este: 403.
+ const other = new URL(signedAudioUrl(crypto.randomUUID(), voiceId, crypto.randomUUID()), 'http://x');
+ const tampered = await app.inject({ method: 'GET', url: `${plainUrl}${other.search}` });
+ assert.equal(tampered.statusCode, 403);
+
+ // Firma válida de un usuario que no es dueño del capítulo: 404 con DB,
+ // 503 sin ella. Nunca el archivo.
+ const signed = await app.inject({
+ method: 'GET',
+ url: signedAudioUrl(chapterId, voiceId, crypto.randomUUID())
+ });
+ assert.ok([404, 503].includes(signed.statusCode), `got ${signed.statusCode}`);
+ for (const res of [unsigned, tampered, signed]) {
  assert.ok(!res.body.includes('audio de otro usuario'));
+ }
  } finally {
  await fs.promises.rm(filePath, { force: true });
  await app.close();

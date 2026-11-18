@@ -6,7 +6,10 @@
  * defecto de Fastify registra la URL completa de cada petición, y el token de
  * acceso acababa en claro en los logs del servidor: cualquiera con acceso a
  * ellos podía reutilizarlo mientras siguiera vigente.
+ *
+ * Lo mismo con `sig`, la firma de las URLs de audio (`core/audio-url.ts`):
+ * con ella cualquiera descarga el audio hasta que caduca.
  */
 export function redactAccessToken(url: string): string {
-  return url.replace(/([?&]access_token=)[^&#]*/gi, '$1[oculto]');
+  return url.replace(/([?&](?:access_token|sig)=)[^&#]*/gi, '$1[oculto]');
 }

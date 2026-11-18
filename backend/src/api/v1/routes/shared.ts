@@ -87,10 +87,6 @@ export function getAudioFilePath(chapterId: string, voiceId: string): string {
   return resolved;
 }
 
-export function getAudioUrlPath(chapterId: string, voiceId: string): string {
-  return `/api/v1/audio/${chapterId}-${voiceId}.mp3`;
-}
-
 export async function saveAudioFile(filePath: string, buffer: Buffer): Promise<void> {
   await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
   await fs.promises.writeFile(filePath, buffer);

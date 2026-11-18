@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:fpdart/fpdart.dart';
 import '../../../../core/errors/failures.dart';
 import '../../../../core/utils/sorted_lookup.dart';
@@ -229,10 +230,18 @@ class AudioTtsRepository implements TtsRepository {
     return 0;
   }
 
-  String _resolveAudioUrl(String audioPath) {
+  /// El servidor devuelve `/api/v1/audio/…?…&sig=…`, con barra inicial. Antes
+  /// se añadía otra y salía `host//api/…`, que el backend responde con 404.
+  /// La query (la firma del enlace) tiene que llegar intacta.
+  @visibleForTesting
+  static String resolveAudioUrl(String base, String audioPath) {
     if (audioPath.startsWith('http')) return audioPath;
-    final base = _baseUrlGetter();
-    final separator = base.endsWith('/') ? '' : '/';
-    return '$base$separator$audioPath';
+    final trimmedBase =
+        base.endsWith('/') ? base.substring(0, base.length - 1) : base;
+    final path = audioPath.startsWith('/') ? audioPath : '/$audioPath';
+    return '$trimmedBase$path';
   }
+
+  String _resolveAudioUrl(String audioPath) =>
+      resolveAudioUrl(_baseUrlGetter(), audioPath);
 }
