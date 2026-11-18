@@ -20,8 +20,26 @@ Uint8List _pdfWithShape() {
   return bytes;
 }
 
+/// PDFium nativo que deja el hook de compilación de pdfium_dart.
+///
+/// Dentro de `flutter test`, pdfium_dart lo busca junto al ejecutable del
+/// tester y en `.dart_tool/native_assets.yaml`, pero el hook lo deja en
+/// `.dart_tool/lib/`. En Windows el cargador del sistema lo encuentra igual;
+/// en Linux (el CI) no, y el recorte se quedaba esperando hasta el timeout.
+File? _builtPdfium() {
+  final name = Platform.isWindows
+      ? 'pdfium.dll'
+      : Platform.isMacOS
+          ? 'libpdfium.dylib'
+          : 'libpdfium.so';
+  final file = File('.dart_tool${Platform.pathSeparator}lib${Platform.pathSeparator}$name');
+  return file.existsSync() ? file.absolute : null;
+}
+
 void main() {
   late Directory dir;
+  final pdfium = _builtPdfium();
+  if (pdfium != null) Pdfrx.pdfiumModulePath ??= pdfium.path;
 
   setUp(() async {
     dir = await Directory.systemTemp.createTemp('lectorsync_crop_');
@@ -60,5 +78,10 @@ void main() {
         .timeout(const Duration(seconds: 5));
     expect(again, isNotNull);
     again!.dispose();
-  });
+  },
+      // Sin PDFium no hay nada que probar: mejor omitida y con el motivo a la
+      // vista que un timeout de 30 s que parece un cuelgue del recorte.
+      skip: pdfium == null && !Platform.isWindows
+          ? 'PDFium nativo no disponible en .dart_tool/lib'
+          : false);
 }
