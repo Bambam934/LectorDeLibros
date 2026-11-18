@@ -46,21 +46,15 @@ export function registerAuthRoutes(app: FastifyInstance): void {
 
     try {
       const existingUser = await db
-        .select({ id: users.id, passwordHash: users.passwordHash })
+        .select({ id: users.id })
         .from(users)
         .where(eq(users.email, body.email))
         .limit(1);
 
+      // Un correo existente nunca se "reclama", tenga o no contraseña: si
+      // no, cualquiera le pondría la suya a una cuenta sin password_hash
+      // (como la demo del seed) y entraría en ella.
       if (existingUser[0]) {
-        if (!existingUser[0].passwordHash) {
-          const passwordHash = await hashPassword(body.password);
-          await db
-            .update(users)
-            .set({ passwordHash })
-            .where(eq(users.id, existingUser[0].id));
-          return reply.code(201).send({ id: existingUser[0].id, email: body.email, name: body.name });
-        }
-
         return reply.code(409).send({
           error: 'Conflict',
           message: 'Ya existe una cuenta con ese correo.'

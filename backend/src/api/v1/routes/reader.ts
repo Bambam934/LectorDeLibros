@@ -8,6 +8,7 @@ import { env } from '../../../core/env.js';
 import { getAuthenticatedUser } from '../../../core/jwt.js';
 import { realtimeBus } from '../../../core/realtime-bus.js';
 import { createTtsProvider } from '../../../core/tts/index.js';
+import { allowedVoiceIds, TtsQuota } from '../../../core/tts/tts-quota.js';
 import { getDatabaseUnavailableReason, getDb } from '../../../db/client.js';
 import { books, chapterAudio, chapters, readingProgress } from '../../../db/schema.js';
 import {
@@ -50,6 +51,11 @@ const audioParamsSchema = z.object({
   chapterId: z.string().uuid(),
   voiceId: z.string().min(1).max(100).regex(/^[a-zA-Z0-9_-]+$/)
 });
+
+/** Con un proveedor de pago cada síntesis cuesta dinero: voces y caracteres acotados. */
+const isPaidTts = () => env.TTS_PROVIDER === 'elevenlabs';
+const paidVoiceIds = allowedVoiceIds(env.ELEVENLABS_ALLOWED_VOICE_IDS, env.ELEVENLABS_DEFAULT_VOICE_ID);
+const ttsQuota = new TtsQuota(env.TTS_DAILY_CHAR_QUOTA);
 
 export function registerReaderRoutes(app: FastifyInstance): void {
   app.get('/api/v1/books/:bookId/chapters', { preHandler: requireAccessToken }, async (request, reply) => {
@@ -163,7 +169,10 @@ export function registerReaderRoutes(app: FastifyInstance): void {
     }
   });
 
-  app.post('/api/v1/books/:bookId/chapters/:chapterId/audio', { preHandler: requireAccessToken }, async (request, reply) => {
+  app.post('/api/v1/books/:bookId/chapters/:chapterId/audio', {
+    preHandler: requireAccessToken,
+    config: { rateLimit: { max: env.TTS_RATE_LIMIT_MAX, timeWindow: 60_000 } }
+  }, async (request, reply) => {
     const params = chapterAudioParamsSchema.parse(request.params);
     const body = chapterAudioSchema.parse(request.body ?? {});
     const authUser = getAuthenticatedUser(request);
@@ -224,6 +233,12 @@ export function registerReaderRoutes(app: FastifyInstance): void {
           message: 'voice_id is required when ELEVENLABS_DEFAULT_VOICE_ID is not configured.'
         });
       }
+      if (isPaidTts() && !paidVoiceIds.has(voiceId)) {
+        return reply.code(400).send({
+          error: 'BadRequest',
+          message: 'voice_id no permitido.'
+        });
+      }
       const providerName = body.provider;
 
       const cachedAudio = await db
@@ -270,8 +285,22 @@ export function registerReaderRoutes(app: FastifyInstance): void {
         });
       }
 
+      const chargedChars = isPaidTts() ? chapterText.length : 0;
+      if (chargedChars > 0 && !ttsQuota.tryConsume(authUser.sub, chargedChars)) {
+        return reply.code(429).send({
+          error: 'TooManyRequests',
+          message: 'Se agotó la cuota diaria de síntesis de voz. Vuelve a intentarlo mañana.'
+        });
+      }
+
       const ttsProvider = createTtsProvider();
-      const result = await ttsProvider.generate(chapterText, voiceId);
+      let result;
+      try {
+        result = await ttsProvider.generate(chapterText, voiceId);
+      } catch (err) {
+        if (chargedChars > 0) ttsQuota.refund(authUser.sub, chargedChars);
+        throw err;
+      }
 
       const audioUrlPath = result.audioBuffer.length > 0
         ? getAudioUrlPath(params.chapterId, voiceId)

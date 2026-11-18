@@ -8,12 +8,23 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
-// Load release signing properties if present. Falls back to debug signing
-// for development. See ../key.properties (gitignored — do not commit).
+// Firma de release desde ../key.properties (en .gitignore: no se versiona).
+// Sin ese archivo una release NO se firma con la clave de debug: su
+// contraseña es pública ("android") y quien consiguiera ese keystore podría
+// firmar "actualizaciones" que Android aceptaría. Las builds debug y profile
+// no se ven afectadas.
 val keystoreProperties = Properties()
 val keystorePropertiesFile = rootProject.file("key.properties")
 if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+}
+gradle.taskGraph.whenReady {
+    val buildsRelease = allTasks.any { it.project == project && it.name.contains("Release") }
+    if (buildsRelease && !keystorePropertiesFile.exists()) {
+        throw GradleException(
+            "Falta android/key.properties: una build de release no se firma con la clave de debug."
+        )
+    }
 }
 
 android {
@@ -73,11 +84,8 @@ android {
 
     buildTypes {
         release {
-            signingConfig = if (keystorePropertiesFile.exists()) {
-                signingConfigs.getByName("release")
-            } else {
-                signingConfigs.getByName("debug")
-            }
+            // null sin key.properties; el chequeo de arriba corta la build.
+            signingConfig = signingConfigs.findByName("release")
             // Solo arquitecturas ARM para release; x86_64 solo se usa en
             // emuladores y excluirlo ahorra unos 27 MiB en el APK final.
             ndk {

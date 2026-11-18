@@ -59,6 +59,7 @@ Backend: `routes.ts` solo compone; handlers en `routes/*.ts` sin tocar la DB; l�
 **Android, Windows y distribución**
 - Errores de instalación siempre con `adb install` (`--split-per-abi` multiplica el versionCode → `INSTALL_FAILED_VERSION_DOWNGRADE`); `python -m http.server` corrompe APKs (sin Range) (S18).
 - Nada de CDNs de terceros para lo empaquetable; ningún `assert` en listeners de streams (2026-07-19).
+- Seguridad (2026-11-17): en el backend toda ruta que reciba un id (`chapterId`, audio) comprueba que el libro es del usuario, no solo el JWT; `npm audit` antes de desplegar (fast-jwt, pdfjs-dist con `isEvalSupported:false`); el repo es PÚBLICO: nada de IPs, claves ni `.claude/settings.json` con permisos amplios.
 - Plugin nativo en Windows: sonda `flutter run -d windows -t tool/sonda.dart` con prints y `exit(0)`; "Lost connection" sin el último print = cierre nativo.
 
 # Convenciones y comandos

@@ -38,9 +38,17 @@ services:
       NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
       NVIDIA_API_BASE_URL: ${NVIDIA_API_BASE_URL:-https://integrate.api.nvidia.com/v1}
       ELEVENLABS_DEFAULT_VOICE_ID: ${ELEVENLABS_DEFAULT_VOICE_ID:-}
+      ELEVENLABS_ALLOWED_VOICE_IDS: ${ELEVENLABS_ALLOWED_VOICE_IDS:-}
+      TTS_DAILY_CHAR_QUOTA: ${TTS_DAILY_CHAR_QUOTA:-200000}
+      TTS_RATE_LIMIT_MAX: ${TTS_RATE_LIMIT_MAX:-10}
     ports:
-      # 0.0.0.0:3000 — expuesto a la LAN para que el celular pueda conectarse.
-      - "3000:3000"
+      # Solo en el propio PC: el backend habla HTTP sin cifrar, y en la LAN
+      # cualquiera de la misma Wi-Fi leería contraseñas y tokens. El celular
+      # llega con `adb reverse tcp:3000 tcp:3000` (localhost en el móvil) y
+      # la publicación hacia fuera va detrás de un proxy con TLS (p. ej. un
+      # túnel de Cloudflare apuntando a 127.0.0.1:3000). Para una prueba
+      # puntual en la LAN: BACKEND_BIND=0.0.0.0 docker compose up.
+      - "${BACKEND_BIND:-127.0.0.1}:3000:3000"
     depends_on:
       postgres:
         condition: service_healthy

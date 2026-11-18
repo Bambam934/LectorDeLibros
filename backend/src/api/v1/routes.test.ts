@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { buildApp } from '../../app.js';
+import { getDb } from '../../db/client.js';
+import { users } from '../../db/schema.js';
 
 const uniqueEmail = (prefix: string) =>
  `${prefix}+${Date.now()}-${Math.floor(Math.random() * 1e6)}@lectorsync.test`;
@@ -146,6 +148,64 @@ describe('API v1 auth and protected routes', () => {
  });
 
  assert.equal(badLogin.statusCode, 401);
+
+ await app.close();
+ });
+
+ it('does not let register claim an existing account without password', async () => {
+ const app = await buildApp();
+ const db = getDb();
+ if (!db) {
+ await app.close();
+ return;
+ }
+
+ const email = uniqueEmail('claim');
+ try {
+ await db.insert(users).values({ email, name: 'Sin password' });
+ } catch {
+ // DB configurada pero caída: el resto de pruebas ya cubre el 503.
+ await app.close();
+ return;
+ }
+
+ const claim = await app.inject({
+ method: 'POST',
+ url: '/api/v1/auth/register',
+ payload: { name: 'Atacante', email, password: 'attacker-password-long-enough' }
+ });
+ assert.equal(claim.statusCode, 409);
+
+ const login = await app.inject({
+ method: 'POST',
+ url: '/api/v1/auth/login',
+ payload: { email, password: 'attacker-password-long-enough' }
+ });
+ assert.equal(login.statusCode, 401);
+
+ await app.close();
+ });
+
+ it('rate-limits chapter audio generation per client', async () => {
+ const app = await buildApp();
+ const token = app.jwt.sign(
+ { sub: crypto.randomUUID(), email: 'tts@lectorsync.test', type: 'access' },
+ { expiresIn: '15m' }
+ );
+ const url = `/api/v1/books/${crypto.randomUUID()}/chapters/${crypto.randomUUID()}/audio`;
+ const statuses: number[] = [];
+ for (let i = 0; i < 11; i++) {
+ const res = await app.inject({
+ method: 'POST',
+ url,
+ headers: { authorization: `Bearer ${token}` },
+ payload: { voice_id: 'voz-de-prueba' }
+ });
+ statuses.push(res.statusCode);
+ }
+ // Los 10 primeros pasan el límite (404/200/503 según haya DB); el 11.º no.
+ assert.ok(statuses.slice(0, 10).every((s) => s !== 429), `statuses: ${statuses}`);
+ assert.equal(statuses[10], 429);
 
  await app.close();
  });

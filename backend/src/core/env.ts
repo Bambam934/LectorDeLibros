@@ -27,6 +27,11 @@ const envSchema = z.object({
 	TTS_PROVIDER: z.enum(['elevenlabs', 'mock']).default('mock'),
 	ELEVENLABS_API_KEY: optionalString,
 	ELEVENLABS_DEFAULT_VOICE_ID: optionalString,
+	// Lista separada por comas; con un proveedor de pago solo se aceptan
+	// estas voces y la de por defecto.
+	ELEVENLABS_ALLOWED_VOICE_IDS: optionalString,
+	TTS_DAILY_CHAR_QUOTA: z.coerce.number().int().positive().default(200_000),
+	TTS_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(10),
 	CORS_ORIGINS: z.string().optional(),
 	HELMET_ENABLED: z.coerce.number().int().min(0).max(1).default(1)
 });

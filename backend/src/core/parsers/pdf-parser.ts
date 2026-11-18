@@ -4,15 +4,36 @@ import { countWords, MAX_WORDS_PER_CHAPTER } from './types.js';
 
 const HEADING_RE = /^(?:(?:Capítulo|Chapter|CAPÍTULO|CHAPTER)\s+\S+.*|(?:PARTE|PART)\s+[IVXLCDM\d]+.*)$/im;
 
+/** Tope de páginas: el PDF lo sube cualquier usuario y se procesa en el hilo del servidor. */
+export const MAX_PDF_PAGES = 3000;
+
 export class PdfParser implements BookParser {
   async parse(buffer: Buffer, filename?: string): Promise<ParsedBook> {
     const pdfjsLib = await importPdfjs();
 
-    const doc = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
+    // El PDF no es de confianza (GHSA-hq66-cqwq-w95j): sin `eval` ni
+    // `new Function` para las fuentes, sin cargar fuentes del sistema.
+    const loadingTask = pdfjsLib.getDocument({
+      data: new Uint8Array(buffer),
+      isEvalSupported: false,
+      disableFontFace: true,
+      useSystemFonts: false
+    });
+    try {
+      return await this.parseDocument(await loadingTask.promise, filename);
+    } finally {
+      await loadingTask.destroy().catch(() => {});
+    }
+  }
+
+  private async parseDocument(doc: PDFDocument, filename?: string): Promise<ParsedBook> {
     const numPages = doc.numPages;
 
     if (numPages === 0) {
       throw new Error('El PDF no contiene páginas.');
+    }
+    if (numPages > MAX_PDF_PAGES) {
+      throw new Error(`El PDF excede el límite de ${MAX_PDF_PAGES} páginas.`);
     }
 
     const outline = await this.extractOutline(doc);
@@ -261,7 +282,12 @@ type PDFDocument = {
 };
 
 type PDFJSLib = {
-  getDocument(params: { data: Uint8Array }): { promise: Promise<PDFDocument> };
+  getDocument(params: {
+    data: Uint8Array;
+    isEvalSupported: boolean;
+    disableFontFace: boolean;
+    useSystemFonts: boolean;
+  }): { promise: Promise<PDFDocument>; destroy(): Promise<void> };
   GlobalWorkerOptions: { workerSrc: string };
 };
 
