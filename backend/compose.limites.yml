@@ -1,0 +1,16 @@
+# Límites de recursos para servidores Linux, encima de docker-compose.yml:
+#   podman compose -f docker-compose.yml -f compose.limites.yml up -d
+#
+# Fuera del compose base porque Podman sin root sobre WSL (Windows) no tiene
+# controladores de cgroups: con estos límites el contenedor no arranca
+# (`crun: open memory.max ... No such file or directory`). En Linux con
+# systemd, Podman sin root los recibe delegados (memory, pids, cpu, io).
+services:
+  postgres:
+    pids_limit: 256
+    mem_limit: 1g
+
+  backend:
+    # Un PDF malicioso o varias importaciones grandes no se comen la máquina.
+    pids_limit: 256
+    mem_limit: 1g

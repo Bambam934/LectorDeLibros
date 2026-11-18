@@ -1,6 +1,21 @@
+# Funciona con Podman (preferido) y con Docker:
+#   podman compose up -d        (máquina sin root: `podman machine init`)
+#   docker compose up -d
+# Las imágenes van con el registro completo (docker.io/...): Podman no
+# resuelve nombres cortos sin preguntar.
+#
+# Endurecimiento: ningún servicio puede ganar privilegios
+# (no-new-privileges) y se quitan todas las capacidades del kernel salvo las
+# imprescindibles. El backend corre además con el sistema de archivos de solo
+# lectura: lo único escribible es el volumen del audio y un /tmp en memoria.
+#
+# Límites de memoria y procesos: en compose.limites.yml, porque Podman sin
+# root sobre WSL no tiene controladores de cgroups y no arranca con ellos.
+# En un servidor Linux (Podman sin root con systemd, o Docker):
+#   podman compose -f docker-compose.yml -f compose.limites.yml up -d
 services:
   postgres:
-    image: postgres:16
+    image: docker.io/library/postgres:16
     container_name: lectorsync-postgres
     environment:
       POSTGRES_DB: lectorsync
@@ -8,7 +23,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?define POSTGRES_PASSWORD en .env antes de levantar}
     ports:
       # 127.0.0.1: la DB solo es accesible desde el host por seguridad.
-      # El backend la alcanza por la red interna de Docker (hostname: postgres).
+      # El backend la alcanza por la red interna (hostname: postgres).
       - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -17,6 +32,12 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    # Lo que necesita el entrypoint oficial: ajustar el dueño del directorio
+    # de datos y bajar de root al usuario postgres.
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
     networks:
       - lectorsync_net
 
@@ -30,7 +51,7 @@ services:
       PORT: 3000
       HOST: 0.0.0.0
       # Importante: usa el hostname 'postgres' (no 127.0.0.1) — es el nombre
-      # del servicio en la red interna de Docker.
+      # del servicio en la red interna.
       DATABASE_URL: postgresql://lectorsync_app:${POSTGRES_PASSWORD:?define POSTGRES_PASSWORD en .env antes de levantar}@postgres:5432/lectorsync
       JWT_SECRET: ${JWT_SECRET:?define JWT_SECRET en .env (min 32 chars) antes de levantar}
       RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-100}
@@ -42,16 +63,31 @@ services:
       TTS_DAILY_CHAR_QUOTA: ${TTS_DAILY_CHAR_QUOTA:-200000}
       TTS_RATE_LIMIT_MAX: ${TTS_RATE_LIMIT_MAX:-10}
       # Con cloudflared en el host, sus peticiones llegan desde la pasarela de
-      # la red de Docker: TRUST_PROXY=172.16.0.0/12 (o la subred concreta).
+      # la red de contenedores: TRUST_PROXY=<esa subred>.
       TRUST_PROXY: ${TRUST_PROXY:-}
+      # Tope de memoria de Node desde el propio proceso: funciona aunque el
+      # motor no pueda aplicar límites de cgroups (Podman sin root en WSL).
+      # Dos importaciones de 50 MB más el análisis del PDF caben de sobra.
+      NODE_OPTIONS: --max-old-space-size=768
     ports:
       # Solo en el propio PC: el backend habla HTTP sin cifrar, y en la LAN
       # cualquiera de la misma Wi-Fi leería contraseñas y tokens. El celular
       # llega con `adb reverse tcp:3000 tcp:3000` (localhost en el móvil) y
       # la publicación hacia fuera va detrás de un proxy con TLS (p. ej. un
       # túnel de Cloudflare apuntando a 127.0.0.1:3000). Para una prueba
-      # puntual en la LAN: BACKEND_BIND=0.0.0.0 docker compose up.
+      # puntual en la LAN: BACKEND_BIND=0.0.0.0 podman compose up.
       - "${BACKEND_BIND:-127.0.0.1}:3000:3000"
+    volumes:
+      # El audio generado. Sin volumen vivía dentro del contenedor: al
+      # recrearlo se perdían los mp3 pero la base de datos los seguía dando
+      # por cacheados, y la app recibía "en caché, sin URL" para siempre.
+      - backend_audio:/app/dist/storage/audio
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
     depends_on:
       postgres:
         condition: service_healthy
@@ -61,6 +97,7 @@ services:
 
 volumes:
   postgres_data:
+  backend_audio:
 
 networks:
   lectorsync_net:
