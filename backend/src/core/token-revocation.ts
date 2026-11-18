@@ -7,9 +7,14 @@ export function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 
-export async function revokeToken(token: string, userId: string, expiresIn: string, type: 'access' | 'refresh' = 'refresh'): Promise<void> {
+/**
+ * Revoca el token. Devuelve true si ESTA llamada lo revocó y false si ya
+ * estaba revocado: el INSERT es atómico (token_hash es único), así que de dos
+ * refresh simultáneos con el mismo token solo uno obtiene true.
+ */
+export async function revokeToken(token: string, userId: string, expiresIn: string, type: 'access' | 'refresh' = 'refresh'): Promise<boolean> {
   const db = getDb();
-  if (!db) return;
+  if (!db) return false;
 
   const expiresAt = new Date();
   const match = expiresIn.match(/^(\d+)([mhd])$/);
@@ -23,12 +28,17 @@ export async function revokeToken(token: string, userId: string, expiresIn: stri
   }
 
   const tokenHash = hashToken(token);
-  await db.insert(revokedTokens).values({
-		tokenHash,
-		userId,
-		type,
-		expiresAt
-  });
+  const inserted = await db
+    .insert(revokedTokens)
+    .values({
+      tokenHash,
+      userId,
+      type,
+      expiresAt
+    })
+    .onConflictDoNothing({ target: revokedTokens.tokenHash })
+    .returning({ id: revokedTokens.id });
+  return inserted.length > 0;
 }
 
 export async function isTokenRevoked(token: string): Promise<boolean> {

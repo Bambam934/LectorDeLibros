@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
@@ -92,7 +93,42 @@ class ApiClient {
     return 'http://localhost:3000';
   }
 
-  Future<bool> _tryRefreshToken() async {
+  /// Access token vigente para quien no pasa por Dio (el stream SSE): si el
+  /// guardado caduca en menos de un minuto, lo renueva antes de devolverlo.
+  Future<String?> freshAccessToken() async {
+    final token = await _secureStorage.getAccessToken();
+    if (token == null || !_expiresSoon(token)) return token;
+    if (await _tryRefreshToken()) return _secureStorage.getAccessToken();
+    return token;
+  }
+
+  static bool _expiresSoon(String jwt) {
+    try {
+      final parts = jwt.split('.');
+      if (parts.length != 3) return false;
+      final payload = jsonDecode(
+        utf8.decode(base64Url.decode(base64Url.normalize(parts[1]))),
+      ) as Map<String, dynamic>;
+      final exp = payload['exp'];
+      if (exp is! int) return false;
+      final expiresAt = DateTime.fromMillisecondsSinceEpoch(exp * 1000);
+      return DateTime.now().add(const Duration(minutes: 1)).isAfter(expiresAt);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Un solo refresco en vuelo: el servidor rota el refresh token y cada uno
+  /// vale una vez, así que dos 401 simultáneos que refrescaran por su cuenta
+  /// harían fallar al segundo, y eso cierra la sesión.
+  Future<bool>? _refreshInFlight;
+
+  Future<bool> _tryRefreshToken() {
+    return _refreshInFlight ??=
+        _doRefreshToken().whenComplete(() => _refreshInFlight = null);
+  }
+
+  Future<bool> _doRefreshToken() async {
     final refreshToken = await _secureStorage.getRefreshToken();
     if (refreshToken == null) return false;
     try {

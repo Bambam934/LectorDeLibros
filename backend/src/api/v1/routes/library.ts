@@ -1,8 +1,9 @@
 import { and, eq } from 'drizzle-orm';
 import fs from 'node:fs';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import { requireAccessToken } from '../../../core/auth.js';
+import { env } from '../../../core/env.js';
 import { getAuthenticatedUser } from '../../../core/jwt.js';
 import { detectFormat, isSupportedFormat, parseBookFile } from '../../../core/parsers/index.js';
 import { getDb } from '../../../db/client.js';
@@ -13,6 +14,8 @@ import {
   getAudioFilePath,
   isDbConnectionError
 } from './shared.js';
+
+let importsInProgress = 0;
 
 export function registerLibraryRoutes(app: FastifyInstance): void {
   app.get('/api/v1/library', { preHandler: requireAccessToken }, async (request, reply) => {
@@ -69,7 +72,27 @@ export function registerLibraryRoutes(app: FastifyInstance): void {
     }
   });
 
-  app.post('/api/v1/library/import', { preHandler: requireAccessToken }, async (request, reply) => {
+  app.post('/api/v1/library/import', {
+    preHandler: requireAccessToken,
+    config: { rateLimit: { max: env.IMPORT_RATE_LIMIT_MAX, timeWindow: 60_000 } }
+  }, async (request, reply) => {
+    // Tope global de importaciones a la vez: varias subidas de 50 MB en
+    // paralelo agotarían la memoria y el hilo del servidor.
+    if (importsInProgress >= env.IMPORT_MAX_CONCURRENT) {
+      return reply.code(503).header('Retry-After', '10').send({
+        error: 'ServiceUnavailable',
+        message: 'El servidor está procesando otros libros. Inténtalo en unos segundos.'
+      });
+    }
+    importsInProgress++;
+    try {
+      return await importBook(request, reply);
+    } finally {
+      importsInProgress--;
+    }
+  });
+
+  async function importBook(request: FastifyRequest, reply: FastifyReply) {
     const authUser = getAuthenticatedUser(request);
 
     const file = await request.file();
@@ -185,7 +208,7 @@ export function registerLibraryRoutes(app: FastifyInstance): void {
       }
       throw err;
     }
-  });
+  }
 
   app.delete('/api/v1/books/:bookId', { preHandler: requireAccessToken }, async (request, reply) => {
     const params = bookParamsSchema.parse(request.params);

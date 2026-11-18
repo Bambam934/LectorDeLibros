@@ -41,6 +41,9 @@ services:
       ELEVENLABS_ALLOWED_VOICE_IDS: ${ELEVENLABS_ALLOWED_VOICE_IDS:-}
       TTS_DAILY_CHAR_QUOTA: ${TTS_DAILY_CHAR_QUOTA:-200000}
       TTS_RATE_LIMIT_MAX: ${TTS_RATE_LIMIT_MAX:-10}
+      # Con cloudflared en el host, sus peticiones llegan desde la pasarela de
+      # la red de Docker: TRUST_PROXY=172.16.0.0/12 (o la subred concreta).
+      TRUST_PROXY: ${TRUST_PROXY:-}
     ports:
       # Solo en el propio PC: el backend habla HTTP sin cifrar, y en la LAN
       # cualquiera de la misma Wi-Fi leería contraseñas y tokens. El celular

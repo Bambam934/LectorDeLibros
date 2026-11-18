@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
 export const ACCESS_TOKEN_TTL = '15m';
@@ -13,7 +14,8 @@ export function createAccessToken(app: FastifyInstance, user: AuthUser): string 
     {
       sub: user.id,
       email: user.email,
-      type: 'access'
+      type: 'access',
+      jti: randomUUID()
     },
     { expiresIn: ACCESS_TOKEN_TTL }
   );
@@ -24,7 +26,10 @@ export function createRefreshToken(app: FastifyInstance, user: AuthUser): string
     {
       sub: user.id,
       email: user.email,
-      type: 'refresh'
+      type: 'refresh',
+      // Sin jti, dos refresh del mismo usuario en el mismo segundo salían
+      // idénticos: revocar uno revocaba el otro, y la rotación no distinguía.
+      jti: randomUUID()
     },
     { expiresIn: REFRESH_TOKEN_TTL }
   );

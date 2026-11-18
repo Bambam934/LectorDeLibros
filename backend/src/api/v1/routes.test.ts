@@ -1,12 +1,18 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import fs from 'node:fs';
+
 import { buildApp } from '../../app.js';
+import { getAudioFilePath, saveAudioFile } from './routes/shared.js';
 import { getDb } from '../../db/client.js';
 import { users } from '../../db/schema.js';
 
 const uniqueEmail = (prefix: string) =>
  `${prefix}+${Date.now()}-${Math.floor(Math.random() * 1e6)}@lectorsync.test`;
+
+/** DATABASE_URL definida pero Postgres no responde (a diferencia de no tener DB). */
+const dbDown = (dbAvailable: boolean) => !dbAvailable && getDb() !== null;
 
 async function getAccessTokenForTest(app: Awaited<ReturnType<typeof buildApp>>, prefix: string) {
  const email = uniqueEmail(prefix);
@@ -210,6 +216,24 @@ describe('API v1 auth and protected routes', () => {
  await app.close();
  });
 
+ it('ignores X-Forwarded-For from untrusted clients in the login rate limit', async () => {
+ const app = await buildApp();
+ const statuses: number[] = [];
+ for (let i = 0; i < 6; i++) {
+ const res = await app.inject({
+ method: 'POST',
+ url: '/api/v1/auth/login',
+ remoteAddress: '203.0.113.9',
+ headers: { 'x-forwarded-for': `198.51.100.${i}` },
+ payload: { email: 'nadie@lectorsync.test', password: 'una-password-cualquiera' }
+ });
+ statuses.push(res.statusCode);
+ }
+ // Cambiar la cabecera en cada intento no da 5 intentos nuevos.
+ assert.equal(statuses[5], 429, `statuses: ${statuses}`);
+ await app.close();
+ });
+
  it('blocks protected routes without token', async () => {
  const app = await buildApp();
 
@@ -233,11 +257,12 @@ describe('API v1 auth and protected routes', () => {
  headers: { authorization: `Bearer ${accessToken}` }
  });
 
- if (dbAvailable) {
+ if (dbDown(dbAvailable)) {
+ assert.equal(libraryResponse.statusCode, 503);
+ } else {
+ // Con DB, la biblioteca del usuario; sin DB configurada, [].
  assert.equal(libraryResponse.statusCode, 200);
  assert.equal(Array.isArray(libraryResponse.json()), true);
- } else {
- assert.equal(libraryResponse.statusCode, 503);
  }
 
  const logoutResponse = await app.inject({
@@ -250,14 +275,16 @@ describe('API v1 auth and protected routes', () => {
  payload: {}
  });
 
- assert.equal(logoutResponse.statusCode, 204);
+ // Revocación cerrada ante fallos: con la DB configurada pero caída no
+ // se puede comprobar el token y la respuesta es 503.
+ assert.equal(logoutResponse.statusCode, dbDown(dbAvailable) ? 503 : 204);
 
  await app.close();
  });
 
  it('rejects EPUB import without file', async () => {
  const app = await buildApp();
- const { accessToken } = await getAccessTokenForTest(app, 'epub');
+ const { accessToken, dbAvailable } = await getAccessTokenForTest(app, 'epub');
 
  const importResponse = await app.inject({
  method: 'POST',
@@ -269,14 +296,14 @@ describe('API v1 auth and protected routes', () => {
  payload: '------test--\r\n'
  });
 
- assert.equal(importResponse.statusCode, 400);
+ assert.equal(importResponse.statusCode, dbDown(dbAvailable) ? 503 : 400);
 
  await app.close();
  });
 
  it('rejects import of unsupported format (.docx)', async () => {
  const app = await buildApp();
- const { accessToken } = await getAccessTokenForTest(app, 'docx');
+ const { accessToken, dbAvailable } = await getAccessTokenForTest(app, 'docx');
 
  const boundary = '----testdocx';
  const payload = [
@@ -299,6 +326,11 @@ describe('API v1 auth and protected routes', () => {
  payload
  });
 
+ if (dbDown(dbAvailable)) {
+ assert.equal(importResponse.statusCode, 503);
+ await app.close();
+ return;
+ }
  assert.equal(importResponse.statusCode, 400);
  const body = importResponse.json();
  assert.match(body.message, /formato no soportado/i);
@@ -374,5 +406,31 @@ describe('API v1 auth and protected routes', () => {
  }
 
  await app.close();
+ });
+
+ it('does not serve audio files of chapters the user does not own', async () => {
+ const app = await buildApp();
+ const chapterId = crypto.randomUUID();
+ const voiceId = 'voz-ajena';
+ const filePath = getAudioFilePath(chapterId, voiceId);
+ await saveAudioFile(filePath, Buffer.from('ID3 audio de otro usuario'));
+ try {
+ const token = app.jwt.sign(
+ { sub: crypto.randomUUID(), email: 'intruso@lectorsync.test', type: 'access' },
+ { expiresIn: '15m' }
+ );
+ const res = await app.inject({
+ method: 'GET',
+ url: `/api/v1/audio/${chapterId}-${voiceId}.mp3`,
+ headers: { authorization: `Bearer ${token}` }
+ });
+ // Nunca el archivo: 404 (no es suyo), 503 (sin DB) o 400 (la ruta
+ // corta `:chapterId` en el primer guion del UUID; ver el reporte).
+ assert.notEqual(res.statusCode, 200);
+ assert.ok(!res.body.includes('audio de otro usuario'));
+ } finally {
+ await fs.promises.rm(filePath, { force: true });
+ await app.close();
+ }
  });
 });

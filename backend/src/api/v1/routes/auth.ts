@@ -10,7 +10,7 @@ import {
   getAuthenticatedUser,
   REFRESH_TOKEN_TTL
 } from '../../../core/jwt.js';
-import { hashPassword, verifyPassword } from '../../../core/password.js';
+import { burnPasswordCheck, hashPassword, verifyPassword } from '../../../core/password.js';
 import { isTokenRevoked, revokeToken } from '../../../core/token-revocation.js';
 import { getDb } from '../../../db/client.js';
 import { users } from '../../../db/schema.js';
@@ -95,6 +95,7 @@ export function registerAuthRoutes(app: FastifyInstance): void {
       const user = result[0];
 
       if (!user || !user.passwordHash) {
+        await burnPasswordCheck(body.password);
         return reply.code(401).send({
           error: 'Unauthorized',
           message: 'Credenciales inválidas.'
@@ -160,7 +161,15 @@ export function registerAuthRoutes(app: FastifyInstance): void {
     }
 
     try {
-      await revokeToken(body.refresh_token, payload.sub, REFRESH_TOKEN_TTL, 'refresh');
+      // Rotación de un solo uso: si otra petición ya lo canjeó (o se usa uno
+      // robado después que su dueño), no se emite un segundo par.
+      const firstUse = await revokeToken(body.refresh_token, payload.sub, REFRESH_TOKEN_TTL, 'refresh');
+      if (!firstUse) {
+        return reply.code(401).send({
+          error: 'Unauthorized',
+          message: 'Token ha sido revocado.'
+        });
+      }
     } catch (err) {
       if (isDbConnectionError(err)) {
         return reply.code(503).send(dbUnavailableReply());

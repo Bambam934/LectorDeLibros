@@ -40,6 +40,10 @@ function durationToMs(value: string): number {
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({
+    // Sin proxies de confianza, request.ip es la del socket. Detrás de uno,
+    // sin esto todos los clientes compartirían su IP y el límite de login
+    // bloquearía a todo el mundo a la vez.
+    trustProxy: env.TRUST_PROXY ?? false,
     logger:
       env.NODE_ENV === 'test'
         ? false

@@ -377,6 +377,18 @@ export function registerReaderRoutes(app: FastifyInstance): void {
         });
       }
 
+      const chapterInBook = await db
+        .select({ id: chapters.id })
+        .from(chapters)
+        .where(and(eq(chapters.id, body.chapter_id), eq(chapters.bookId, params.bookId)))
+        .limit(1);
+      if (!chapterInBook[0]) {
+        return reply.code(404).send({
+          error: 'NotFound',
+          message: 'Capítulo no encontrado en este libro.'
+        });
+      }
+
       const totalWords = ownedBook[0].totalWords ?? 0;
       const percentage =
         totalWords > 0 ? Math.min((body.word_index / totalWords) * 100, 100) : 0;
@@ -433,6 +445,34 @@ export function registerReaderRoutes(app: FastifyInstance): void {
 
   app.get('/api/v1/audio/:chapterId-:voiceId.mp3', { preHandler: requireAccessToken }, async (request, reply) => {
     const params = audioParamsSchema.parse(request.params);
+    const authUser = getAuthenticatedUser(request);
+    const db = getDb();
+
+    // El JWT solo dice quién es; el capítulo tiene que ser de un libro suyo.
+    // Sin base de datos no hay forma de comprobarlo: no se sirve nada.
+    if (!db) {
+      return reply.code(503).send(dbUnavailableReply());
+    }
+    try {
+      const owned = await db
+        .select({ id: chapters.id })
+        .from(chapters)
+        .innerJoin(books, eq(books.id, chapters.bookId))
+        .where(and(eq(chapters.id, params.chapterId), eq(books.userId, authUser.sub)))
+        .limit(1);
+      if (!owned[0]) {
+        return reply.code(404).send({
+          error: 'NotFound',
+          message: 'Audio no encontrado.'
+        });
+      }
+    } catch (err) {
+      if (isDbConnectionError(err)) {
+        return reply.code(503).send(dbUnavailableReply());
+      }
+      throw err;
+    }
+
     const filePath = getAudioFilePath(params.chapterId, params.voiceId);
 
     if (!fs.existsSync(filePath)) {

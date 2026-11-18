@@ -28,8 +28,13 @@ export async function requireAccessToken(request: FastifyRequest, reply: Fastify
  });
  }
  } catch {
- // If revocation check fails (e.g. DB down), allow the request through.
- // The 15-min access token TTL limits the risk window.
+ // Falla cerrada: si no se puede saber si el token está revocado (DB
+ // caída), no se deja pasar. 503 y no 401: el cliente no cierra la
+ // sesión, solo reintenta más tarde.
+ return reply.code(503).send({
+ error: 'ServiceUnavailable',
+ message: 'No se pudo verificar la sesión. Inténtalo de nuevo en unos segundos.'
+ });
  }
  }
 }

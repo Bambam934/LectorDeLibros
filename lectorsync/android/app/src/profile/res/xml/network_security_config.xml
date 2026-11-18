@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SOLO PROFILE (`flutter build apk --profile`, para medir fluidez en el
+  móvil): sustituye al de src/main. Es una build de desarrollo firmada con la
+  clave de debug, así que admite HTTP hacia cualquier destino, como la de
+  debug, para probar contra el backend en una IP de la LAN.
+
+  En release NO aplica: allí rige src/main/res/xml/network_security_config.xml.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

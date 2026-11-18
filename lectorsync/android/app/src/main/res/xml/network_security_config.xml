@@ -6,7 +6,10 @@
 
   Aquí el HTTP sin cifrar se prohíbe de forma explícita en el base-config:
   en Android 7 y 8 (minSdk 24) el valor por defecto es PERMITIRLO, así que
-  omitirlo no bastaría. Solo quedan las excepciones de desarrollo con IP fija.
+  omitirlo no bastaría. Solo quedan excepciones que no salen del dispositivo
+  o del PC conectado: el emulador y `adb reverse`. Ninguna IP de la LAN: en
+  otra red esa IP es de cualquiera, y la release le mandaría la contraseña en
+  claro. Para probar contra la LAN están las builds debug y profile.
 -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="false">
@@ -21,9 +24,5 @@
     <!-- Dispositivo físico conectado por USB con `adb reverse` -->
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="false">localhost</domain>
-    </domain-config>
-    <!-- Backend de desarrollo en la red local (PC del desarrollador) -->
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">192.168.0.7</domain>
     </domain-config>
 </network-security-config>

@@ -17,6 +17,10 @@ import { realtimeBus, type RealtimeEvent } from '../../../core/realtime-bus.js';
 // Heartbeat: a comment line (": ping\n\n") is written every 25 s to
 // keep proxies (and Node's default socket timeout) from closing an
 // otherwise-idle connection. Comments are ignored by EventSource.
+const MAX_STREAMS_PER_USER = 5;
+/** Tope de vida de un stream aunque el token no traiga `exp`. */
+const MAX_STREAM_MS = 15 * 60_000;
+
 export function registerSyncRoutes(app: FastifyInstance): void {
   app.get(
     '/api/v1/sync/stream',
@@ -40,6 +44,14 @@ export function registerSyncRoutes(app: FastifyInstance): void {
     },
     async (request, reply) => {
       const authUser = getAuthenticatedUser(request);
+
+      // Tope por usuario: cada stream es un socket abierto indefinidamente.
+      if (realtimeBus.listenerCount(authUser.sub) >= MAX_STREAMS_PER_USER) {
+        return reply.code(429).send({
+          error: 'TooManyRequests',
+          message: 'Demasiadas conexiones de sincronización abiertas.'
+        });
+      }
 
       // Bypass Fastify's content negotiation entirely — we own the
       // raw socket from here on so the response body can stay open.
@@ -82,8 +94,21 @@ export function registerSyncRoutes(app: FastifyInstance): void {
       }, 25_000);
       heartbeat.unref?.();
 
+      // El token solo se comprueba al conectar: al caducar se corta el
+      // stream y el cliente reconecta con uno nuevo (o ya no puede, si
+      // cerró sesión o se revocó). Sin esto, un stream seguía recibiendo
+      // eventos para siempre tras el logout.
+      const lifetimeMs = authUser.exp
+        ? Math.min(authUser.exp * 1000 - Date.now(), MAX_STREAM_MS)
+        : MAX_STREAM_MS;
+      const expiryTimer = setTimeout(() => {
+        if (!reply.raw.writableEnded) reply.raw.end();
+      }, Math.max(0, lifetimeMs));
+      expiryTimer.unref?.();
+
       const cleanup = () => {
         clearInterval(heartbeat);
+        clearTimeout(expiryTimer);
         unsubscribe();
       };
 

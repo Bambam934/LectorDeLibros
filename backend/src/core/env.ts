@@ -32,7 +32,18 @@ const envSchema = z.object({
 	ELEVENLABS_ALLOWED_VOICE_IDS: optionalString,
 	TTS_DAILY_CHAR_QUOTA: z.coerce.number().int().positive().default(200_000),
 	TTS_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(10),
+	// Cada importación carga hasta 50 MB en memoria y procesa el libro en el
+	// hilo del servidor: pocas por minuto y pocas a la vez.
+	IMPORT_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(5),
+	IMPORT_MAX_CONCURRENT: z.coerce.number().int().positive().default(2),
 	CORS_ORIGINS: z.string().optional(),
+	// IPs o CIDR (comas) de los proxies cuyo X-Forwarded-For se cree, p. ej.
+	// `127.0.0.1` con un túnel de Cloudflare local. Nunca "true": cualquiera
+	// falsificaría su IP y esquivaría el límite de intentos de login.
+	TRUST_PROXY: optionalString.refine(
+		(v) => v === undefined || !['true', '1', '*'].includes(v.trim().toLowerCase()),
+		'TRUST_PROXY debe listar IPs o CIDR concretos, no "true"'
+	),
 	HELMET_ENABLED: z.coerce.number().int().min(0).max(1).default(1)
 });
 

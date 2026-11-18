@@ -187,7 +187,9 @@ Future<void> configureDependencies() async {
     sl.registerLazySingleton<SyncStreamClient>(
       () => createSyncStreamClient(
         baseUrlGetter: () => sl<ApiClient>().dio.options.baseUrl,
-        accessTokenGetter: () => sl<SecureStorage>().getAccessToken(),
+        // Renovado si está por caducar: el servidor corta el stream cuando
+        // el token vence, y reconectar con el viejo daría 401 sin fin.
+        accessTokenGetter: () => sl<ApiClient>().freshAccessToken(),
       ),
     );
   }
