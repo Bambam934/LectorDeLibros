@@ -75,7 +75,9 @@ class AudioTtsRepository implements TtsRepository {
         provider: 'elevenlabs',
       );
 
-      return result.fold(
+      // `await`: sin él, un error dentro de la rama asíncrona (setUrl, seek,
+      // play) se escapaba de este try y el estado no pasaba a `error`.
+      return await result.fold(
         (failure) {
           _emit(TtsPlaybackStatus.error);
           return left(failure);

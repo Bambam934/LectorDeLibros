@@ -37,11 +37,15 @@ jobs:
         working-directory: lectorsync
     steps:
       - uses: actions/checkout@v4
-      # channel: stable trae el Dart SDK actual (>= 3.11.5, requerido por pubspec).
-      # Si necesitas reproducibilidad estricta, fija flutter-version en su lugar.
+      # Versión fija, la misma del equipo de desarrollo (Dart 3.11.5, la que
+      # pide pubspec). Con `channel: stable` a secas el CI pasó solo a 3.50,
+      # que declara obsoleto package:flutter/material.dart y rompió
+      # `flutter analyze` sin que cambiara el código. Subirla es una tarea
+      # propia (migrar a package:material_ui), no un efecto secundario.
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+          flutter-version: 3.41.7
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
